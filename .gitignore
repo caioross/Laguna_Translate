@@ -75,3 +75,4 @@ laguna_prefs.json
 # ===== Node (caso adicionemos build de frontend) =====
 node_modules/
 package-lock.json
+/docs
