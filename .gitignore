@@ -1,0 +1,77 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+*.spec.bak
+.Python
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+.claude/
+.docs/
+
+# ===== Virtual envs =====
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# ===== Models & caches =====
+# modelos baixados sao pesados (centenas MB); nao comitar
+models/
+models_cache/
+# cache do huggingface
+.cache/
+hf_cache/
+# argos packages baixados em runtime
+*.argosmodel
+# piper voices
+*.onnx
+*.onnx.json
+
+# ===== Audio / bench artefatos =====
+out_*.wav
+bench_out/
+dry_*.wav
+audio/tmp/
+*.log
+
+# ===== PyInstaller / Inno Setup =====
+build_temp/
+installer_out/
+*.exe
+*.msi
+!scripts/*.exe
+Output/
+
+# ===== IDE / editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Windows shortcuts locais =====
+*.lnk
+
+# ===== Config do usuario (nao comitar suas preferencias) =====
+user_config.json
+laguna_prefs.json
+
+# ===== Node (caso adicionemos build de frontend) =====
+node_modules/
+package-lock.json

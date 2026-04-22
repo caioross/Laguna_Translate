@@ -1,0 +1,7 @@
+faster-whisper
+argostranslate
+piper-tts
+sounddevice
+numpy
+scipy
+webrtcvad-wheels

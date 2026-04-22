@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Laguna Translator</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🌊</span>
+      <div>
+        <h1>Laguna Translator</h1>
+        <p class="subtitle" data-i18n="subtitle">tradução de voz em tempo real · 100% local</p>
+      </div>
+    </div>
+    <div class="badges">
+      <span id="laguna-badge" class="badge neutral" data-tip-i18n="tip.laguna_badge">🎛 <span data-i18n="badge.devices">Dispositivos</span>: —</span>
+      <span id="gpu-badge" class="badge neutral" data-tip-i18n="tip.gpu_badge">⚡ —</span>
+      <button id="lang-toggle" class="icon-btn" data-tip-i18n="tip.lang_toggle" aria-label="language">🌐</button>
+      <button id="theme-toggle" class="icon-btn" data-tip-i18n="tip.theme_toggle" aria-label="toggle theme">🌙</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- FALAR -->
+    <section class="panel" data-dir="falar">
+      <header class="panel-head">
+        <h2><span class="emoji">🎙️</span> <span data-i18n="falar.title">FALAR</span></h2>
+        <p data-i18n="falar.subtitle">você → Discord (tradução sai como se fosse seu mic)</p>
+        <span class="status idle" data-role="status" data-i18n="status.idle">parado</span>
+        <div class="meters">
+          <div class="meter" data-tip-i18n="tip.meter_in"><span class="meter-label" data-i18n="meter.in">entrada</span><span class="meter-bar"><span class="meter-fill" data-role="meter-in"></span></span></div>
+          <div class="meter" data-tip-i18n="tip.meter_out"><span class="meter-label" data-i18n="meter.out">saída</span><span class="meter-bar"><span class="meter-fill" data-role="meter-out"></span></span></div>
+        </div>
+      </header>
+
+      <div class="form">
+        <label data-tip-i18n="tip.langs">
+          <span data-i18n="label.langs">Idioma falado → alvo</span>
+          <div class="row">
+            <select data-role="src_lang">
+              <option value="pt">🇧🇷 Português</option>
+              <option value="en">🇺🇸 English</option>
+            </select>
+            <span class="arrow">→</span>
+            <select data-role="tgt_lang">
+              <option value="en">🇺🇸 English</option>
+              <option value="pt">🇧🇷 Português</option>
+            </select>
+          </div>
+        </label>
+
+        <label data-tip-i18n="tip.falar.mic">
+          <span data-i18n="label.mic">🎤 Microfone (captura)</span>
+          <select data-role="capture_device"></select>
+        </label>
+
+        <label data-tip-i18n="tip.falar.virtual">
+          <span data-i18n="label.virtual_out">📡 Saída virtual (Discord escuta aqui)</span>
+          <select data-role="virtual_out"></select>
+        </label>
+
+        <label class="inline" data-tip-i18n="tip.falar.passthrough">
+          <input type="checkbox" data-role="passthrough_falar" />
+          <span data-i18n="falar.passthrough">🔀 Também enviar minha voz original ao Discord (mix com a tradução)</span>
+        </label>
+
+        <label class="inline" data-tip-i18n="tip.falar.also_fone">
+          <input type="checkbox" data-role="also_fone" />
+          <span data-i18n="falar.also_fone">Tocar também no meu fone</span>
+        </label>
+        <label data-role="fone_row" class="hidden">
+          <span data-i18n="label.fone">🎧 Fone/Alto-falante</span>
+          <select data-role="fone_device"></select>
+        </label>
+
+        <div class="volumes">
+          <label class="vol" data-tip-i18n="tip.vol_out">
+            <span><span data-i18n="vol.out">🔊 Volume da tradução</span> <b data-role="vol_out_label">0 dB</b></span>
+            <input type="range" min="-24" max="12" step="1" value="0" data-role="output_gain_db" />
+          </label>
+          <label class="vol" data-tip-i18n="tip.vol_pt">
+            <span><span data-i18n="vol.pt">🔀 Volume do passthrough</span> <b data-role="vol_pt_label">0 dB</b></span>
+            <input type="range" min="-24" max="12" step="1" value="0" data-role="passthrough_gain_db" />
+          </label>
+        </div>
+
+        <div class="adv">
+          <details>
+            <summary data-tip-i18n="tip.advanced" data-i18n="label.advanced">avançado</summary>
+            <label data-tip-i18n="tip.model">
+              <span data-i18n="label.model">Modelo STT</span>
+              <select data-role="model_size">
+                <option value="tiny" data-i18n-opt="model.tiny">tiny (rápido, menos preciso)</option>
+                <option value="base">base</option>
+                <option value="small" selected data-i18n-opt="model.small">small (recomendado)</option>
+                <option value="medium" data-i18n-opt="model.medium">medium (mais pesado)</option>
+              </select>
+            </label>
+            <label data-tip-i18n="tip.device">
+              <span data-i18n="label.device">Device</span>
+              <select data-role="device">
+                <option value="auto">auto</option>
+                <option value="cuda">cuda</option>
+                <option value="cpu">cpu</option>
+              </select>
+            </label>
+            <label class="inline" data-tip-i18n="tip.skip_same">
+              <input type="checkbox" data-role="skip_same_lang" checked />
+              <span data-i18n="label.skip_same">Pular tradução quando detectar o idioma alvo</span>
+            </label>
+          </details>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" data-role="start" data-tip-i18n="tip.start"><span data-i18n="btn.start">▶ Iniciar</span></button>
+          <button class="btn danger" data-role="stop" disabled data-tip-i18n="tip.stop"><span data-i18n="btn.stop">■ Parar</span></button>
+        </div>
+      </div>
+
+      <div class="live">
+        <div class="live-block" data-tip-i18n="tip.stt_block">
+          <div class="live-label"><span class="dot stt"></span> <span data-i18n="live.stt">Transcrição</span></div>
+          <div class="live-text" data-role="stt">—</div>
+        </div>
+        <div class="live-block" data-tip-i18n="tip.mt_block">
+          <div class="live-label"><span class="dot mt"></span> <span data-i18n="live.mt">Tradução</span></div>
+          <div class="live-text" data-role="mt">—</div>
+        </div>
+        <div class="metrics" data-role="metrics" data-tip-i18n="tip.metrics">
+          <span>p50 <b data-role="p50">—</b>ms</span>
+          <span>p95 <b data-role="p95">—</b>ms</span>
+          <span>n <b data-role="n">0</b></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ESCUTAR -->
+    <section class="panel" data-dir="escutar">
+      <header class="panel-head">
+        <h2><span class="emoji">👂</span> <span data-i18n="escutar.title">ESCUTAR</span></h2>
+        <p data-i18n="escutar.subtitle">Discord → você (tradução toca no seu fone)</p>
+        <span class="status idle" data-role="status" data-i18n="status.idle">parado</span>
+        <div class="meters">
+          <div class="meter" data-tip-i18n="tip.meter_in"><span class="meter-label" data-i18n="meter.in">entrada</span><span class="meter-bar"><span class="meter-fill" data-role="meter-in"></span></span></div>
+          <div class="meter" data-tip-i18n="tip.meter_out"><span class="meter-label" data-i18n="meter.out">saída</span><span class="meter-bar"><span class="meter-fill" data-role="meter-out"></span></span></div>
+        </div>
+      </header>
+
+      <div class="form">
+        <label data-tip-i18n="tip.escutar.langs">
+          <span data-i18n="label.langs">Idioma falado → alvo</span>
+          <div class="row">
+            <select data-role="src_lang">
+              <option value="en">🇺🇸 English</option>
+              <option value="pt">🇧🇷 Português</option>
+            </select>
+            <span class="arrow">→</span>
+            <select data-role="tgt_lang">
+              <option value="pt">🇧🇷 Português</option>
+              <option value="en">🇺🇸 English</option>
+            </select>
+          </div>
+        </label>
+
+        <label data-tip-i18n="tip.escutar.capture">
+          <span data-i18n="label.escutar_capture">🔊 Captura (loopback ou mic virtual)</span>
+          <select data-role="capture_device"></select>
+        </label>
+        <label class="inline" data-tip-i18n="tip.loopback">
+          <input type="checkbox" data-role="use_loopback" />
+          <span data-i18n="escutar.loopback">Captura loopback (WASAPI) — escuta saída do PC</span>
+        </label>
+
+        <label data-tip-i18n="tip.escutar.fone">
+          <span data-i18n="label.where_listen">🎧 Saída (onde você ouve)</span>
+          <select data-role="fone_device"></select>
+        </label>
+
+        <label class="inline" data-tip-i18n="tip.escutar.passthrough">
+          <input type="checkbox" data-role="passthrough_escutar" />
+          <span data-i18n="escutar.passthrough">🔀 Também tocar áudio original no fone (Discord + tradução juntos)</span>
+        </label>
+
+        <div class="volumes">
+          <label class="vol" data-tip-i18n="tip.vol_out">
+            <span><span data-i18n="vol.out">🔊 Volume da tradução</span> <b data-role="vol_out_label">0 dB</b></span>
+            <input type="range" min="-24" max="12" step="1" value="0" data-role="output_gain_db" />
+          </label>
+          <label class="vol" data-tip-i18n="tip.vol_pt">
+            <span><span data-i18n="vol.pt">🔀 Volume do passthrough</span> <b data-role="vol_pt_label">0 dB</b></span>
+            <input type="range" min="-24" max="12" step="1" value="0" data-role="passthrough_gain_db" />
+          </label>
+        </div>
+
+        <div class="adv">
+          <details>
+            <summary data-i18n="label.advanced">avançado</summary>
+            <label data-tip-i18n="tip.model">
+              <span data-i18n="label.model">Modelo STT</span>
+              <select data-role="model_size">
+                <option value="tiny">tiny</option>
+                <option value="base">base</option>
+                <option value="small" selected>small</option>
+                <option value="medium">medium</option>
+              </select>
+            </label>
+            <label data-tip-i18n="tip.device">
+              <span data-i18n="label.device">Device</span>
+              <select data-role="device">
+                <option value="auto">auto</option>
+                <option value="cuda">cuda</option>
+                <option value="cpu">cpu</option>
+              </select>
+            </label>
+            <label class="inline" data-tip-i18n="tip.skip_same">
+              <input type="checkbox" data-role="skip_same_lang" checked />
+              <span data-i18n="label.skip_same">Pular tradução quando detectar o idioma alvo</span>
+            </label>
+          </details>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" data-role="start" data-tip-i18n="tip.start"><span data-i18n="btn.start">▶ Iniciar</span></button>
+          <button class="btn danger" data-role="stop" disabled data-tip-i18n="tip.stop"><span data-i18n="btn.stop">■ Parar</span></button>
+        </div>
+      </div>
+
+      <div class="live">
+        <div class="live-block" data-tip-i18n="tip.stt_block">
+          <div class="live-label"><span class="dot stt"></span> <span data-i18n="live.stt">Transcrição</span></div>
+          <div class="live-text" data-role="stt">—</div>
+        </div>
+        <div class="live-block" data-tip-i18n="tip.mt_block">
+          <div class="live-label"><span class="dot mt"></span> <span data-i18n="live.mt">Tradução</span></div>
+          <div class="live-text" data-role="mt">—</div>
+        </div>
+        <div class="metrics" data-role="metrics" data-tip-i18n="tip.metrics">
+          <span>p50 <b data-role="p50">—</b>ms</span>
+          <span>p95 <b data-role="p95">—</b>ms</span>
+          <span>n <b data-role="n">0</b></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="tips">
+    <details>
+      <summary data-i18n="tips.setup">Configurar Discord com Laguna Translator (passo a passo)</summary>
+      <ol data-i18n-html="tips.steps">
+        <li>Instale VB-CABLE (grátis): <code>https://vb-audio.com/Cable/</code> e reinicie.</li>
+        <li>Abra <b>Windows Sound Settings → Mais configurações de som</b>.</li>
+        <li>Em <b>Gravação</b>, clique direito em "CABLE Output" → Propriedades → aba <b>Geral</b> → renomeie para <code>Laguna Translator Mic</code>.</li>
+        <li>Em <b>Reprodução</b>, clique direito em "CABLE Input" → Propriedades → renomeie para <code>Laguna Translator Output</code>.</li>
+        <li>Recarregue esta página. Os devices aparecem marcados com 🌊.</li>
+        <li>No Discord → Configurações → Voz e Vídeo:
+          <ul>
+            <li><b>Dispositivo de entrada:</b> Laguna Translator Mic</li>
+            <li><b>Dispositivo de saída:</b> escolha o fone real (não o virtual)</li>
+          </ul>
+        </li>
+      </ol>
+    </details>
+  </footer>
+
+  <script src="/i18n.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
