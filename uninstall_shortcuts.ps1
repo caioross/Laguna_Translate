@@ -8,7 +8,7 @@ foreach ($p in @(
 )) {
     if (Test-Path $p) {
         Remove-Item $p -Force
-        Write-Host "Removido: $p"
+        Write-Host "Removed / Removido: $p"
     }
 }
-Write-Host "Atalhos removidos."
+Write-Host "Shortcuts removed / Atalhos removidos."

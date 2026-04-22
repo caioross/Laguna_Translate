@@ -61,6 +61,18 @@ function $all(sel, root = document) { return Array.from(root.querySelectorAll(se
 function $(sel, root = document) { return root.querySelector(sel); }
 function $role(panel, role) { return panel.querySelector(`[data-role="${role}"]`); }
 
+// Resolve eventos do backend: se trouxer `key`, traduz via LAGUNA_T e interpola
+// `{placeholder}` com `args`. Senão, fallback para `ev.msg` cru (compat).
+function resolveEvent(ev) {
+  const T = window.LAGUNA_T || ((k) => k);
+  if (ev && ev.key) {
+    const tpl = T(ev.key);
+    const args = ev.args || {};
+    return tpl.replace(/\{(\w+)\}/g, (_, k) => (args[k] !== undefined ? args[k] : `{${k}}`));
+  }
+  return ev && ev.msg ? ev.msg : '';
+}
+
 function fillSelect(sel, items, placeholderKey) {
   const ph = placeholderKey ? (window.LAGUNA_T ? window.LAGUNA_T(placeholderKey) : placeholderKey) : null;
   sel.innerHTML = '';
@@ -256,7 +268,9 @@ async function startDirection(dir) {
   toggleButtons(panel, true);
   const res = await API.start(dir, cfg);
   if (res.error) {
-    setStatus(panel, 'error', res.error);
+    const T = window.LAGUNA_T || ((k) => k);
+    const text = res.error_key ? T(res.error_key) : res.error;
+    setStatus(panel, 'error', text);
     toggleButtons(panel, false);
     return;
   }
@@ -372,8 +386,8 @@ function onEvent(ev) {
 
   switch (ev.kind) {
     case 'status':
-      if (ev.msg && ev.msg.startsWith('Carregando')) setStatusKey(panel, 'loading', 'status.loading');
-      else setStatus(panel, 'running', ev.msg);
+      if (ev.key === 'status.loading_models') setStatusKey(panel, 'loading', 'status.loading');
+      else setStatus(panel, 'running', resolveEvent(ev));
       break;
     case 'ready':
       setStatusKey(panel, 'running', 'status.running');
@@ -413,7 +427,7 @@ function onEvent(ev) {
       $role(panel, 'n').textContent = ev.samples ?? 0;
       break;
     case 'error':
-      setStatus(panel, 'error', ev.msg);
+      setStatus(panel, 'error', resolveEvent(ev));
       toggleButtons(panel, false);
       state.running.delete(dir);
       break;

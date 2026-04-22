@@ -106,10 +106,31 @@ class DirectionWorker:
         except Exception:
             pass
 
+    def _emit_key(
+        self,
+        kind: str,
+        key: str,
+        args: Optional[dict] = None,
+        msg: Optional[str] = None,
+    ) -> None:
+        """Emite evento com chave i18n + args para o cliente resolver.
+
+        `msg` e o fallback em portugues (usado se o cliente nao tem a chave
+        ou em logs de console).
+        """
+        args = args or {}
+        fallback = msg if msg is not None else (key.format(**args) if args else key)
+        self._emit(kind, key=key, args=args, msg=fallback)
+
     def _run(self) -> None:
         try:
             device, ct = _resolve_device(self.cfg.device, self.cfg.compute_type)
-            self._emit("status", msg=f"Carregando modelos ({self.cfg.model_size}/{device})...")
+            self._emit_key(
+                "status",
+                "status.loading_models",
+                {"model": self.cfg.model_size, "device": device},
+                msg=f"Carregando modelos ({self.cfg.model_size}/{device})...",
+            )
             stt = STT(
                 language=self.cfg.src_lang,
                 model_size=self.cfg.model_size,
@@ -119,7 +140,7 @@ class DirectionWorker:
             mt = ArgosMT(src=self.cfg.src_lang, tgt=self.cfg.tgt_lang)
             tts = PiperTTS(lang=self.cfg.tgt_lang)
 
-            self._emit("status", msg="Aquecendo...")
+            self._emit_key("status", "status.warmup", msg="Aquecendo...")
             _ = stt.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))
             _ = mt.translate("olá" if self.cfg.src_lang == "pt" else "hello")
             _ = tts.synthesize("warm up")
@@ -139,7 +160,7 @@ class DirectionWorker:
                 pt_t.start()
                 self._threads.append(pt_t)
 
-            self._emit("status", msg="Ouvindo")
+            self._emit_key("status", "status.listening", msg="Ouvindo")
             self._emit("ready")
 
             while not self._stop.is_set():
@@ -259,14 +280,24 @@ class DirectionWorker:
                 kwargs["channels"] = 2
                 kwargs["callback"] = cb_loopback
             except Exception as e:
-                self._emit("error", msg=f"loopback indisponivel: {e}")
+                self._emit_key(
+                    "error",
+                    "error.loopback_unavailable",
+                    {"detail": str(e)},
+                    msg=f"loopback indisponivel: {e}",
+                )
 
         try:
             with sd.InputStream(**kwargs):
                 while not self._stop.is_set():
                     time.sleep(0.1)
         except Exception as e:
-            self._emit("error", msg=f"InputStream: {e}")
+            self._emit_key(
+                "error",
+                "error.input_stream",
+                {"detail": str(e)},
+                msg=f"InputStream: {e}",
+            )
 
     def _passthrough_run(self) -> None:
         """Stream paralelo: roteia audio bruto da captura -> passthrough_device (normalmente fone).
@@ -278,14 +309,24 @@ class DirectionWorker:
         src = self.cfg.capture_device
         dst = self.cfg.passthrough_device
         if src is None or dst is None or src == dst:
-            self._emit("error", msg=f"passthrough: devices invalidos (src={src}, dst={dst})")
+            self._emit_key(
+                "error",
+                "error.passthrough_invalid_devices",
+                {"src": src, "dst": dst},
+                msg=f"passthrough: devices invalidos (src={src}, dst={dst})",
+            )
             return
 
         try:
             src_info = sd.query_devices(src)
             dst_info = sd.query_devices(dst)
         except Exception as e:
-            self._emit("error", msg=f"passthrough query_devices: {e}")
+            self._emit_key(
+                "error",
+                "error.passthrough_query",
+                {"detail": str(e)},
+                msg=f"passthrough query_devices: {e}",
+            )
             return
 
         src_sr = int(src_info["default_samplerate"])
@@ -299,13 +340,23 @@ class DirectionWorker:
                 self._run_fullduplex(src, dst, src_sr, in_ch, out_ch)
                 return
             except Exception as e:
-                self._emit("status", msg=f"passthrough duplex falhou ({e}); usando pipeline queue")
+                self._emit_key(
+                    "status",
+                    "status.passthrough_duplex_fallback",
+                    {"detail": str(e)},
+                    msg=f"passthrough duplex falhou ({e}); usando pipeline queue",
+                )
 
         # Fallback: streams independentes com queue
         try:
             self._run_split_passthrough(src, dst, src_sr, dst_sr, in_ch, out_ch)
         except Exception as e:
-            self._emit("error", msg=f"passthrough: {e}")
+            self._emit_key(
+                "error",
+                "error.passthrough_generic",
+                {"detail": str(e)},
+                msg=f"passthrough: {e}",
+            )
 
     def _run_fullduplex(self, src: int, dst: int, sr: int, in_ch: int, out_ch: int) -> None:
         def cb(indata, outdata, frames, time_info, status):
@@ -466,7 +517,12 @@ class DirectionWorker:
             try:
                 sd.play(pcm, samplerate=sr, device=dev, blocking=True)
             except Exception as e:
-                self._emit("error", msg=f"play(dev={dev}): {e}")
+                self._emit_key(
+                    "error",
+                    "error.play",
+                    {"dev": dev, "detail": str(e)},
+                    msg=f"play(dev={dev}): {e}",
+                )
 
 
 # ---- device helpers ----------------------------------------------------------
