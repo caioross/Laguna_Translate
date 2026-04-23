@@ -119,7 +119,7 @@ class DirectionWorker:
         ou em logs de console).
         """
         args = args or {}
-        fallback = msg if msg is not None else (key.format(**args) if args else key)
+        fallback = msg if msg is not None else key
         self._emit(kind, key=key, args=args, msg=fallback)
 
     def _run(self) -> None:
