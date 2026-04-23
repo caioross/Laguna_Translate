@@ -386,7 +386,7 @@ function onEvent(ev) {
 
   switch (ev.kind) {
     case 'status':
-      if (ev.key === 'status.loading_models') setStatusKey(panel, 'loading', 'status.loading');
+      if (ev.key === 'status.loading_models') setStatus(panel, 'loading', resolveEvent(ev));
       else setStatus(panel, 'running', resolveEvent(ev));
       break;
     case 'ready':
