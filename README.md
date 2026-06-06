@@ -21,7 +21,12 @@ _Sem nuvem. Sem API key. Sem latência de internet. Sua voz nunca sai da sua má
 
 </div>
 
+🇧🇷 [**Português**](#-português) · 🇺🇸 [**English**](#-english)
+
 ---
+
+## 🇧🇷 Português
+<a name="-português"></a>
 
 ## ✨ O que é
 
@@ -440,8 +445,52 @@ Issues com bugs/ideias também são bem-vindas. Sem PR template, sem CLA, sem bu
 
 ---
 
+## 🇺🇸 English
+<a name="-english"></a>
+
+### What it is
+
+**Laguna** is a real-time voice translator built for Discord calls (but works anywhere). You speak into your mic; Laguna transcribes, translates and re-synthesizes it — all on your machine, in under half a second — and feeds the translated audio into a virtual microphone that Discord sees as if it were you. The reverse direction works too: it captures Discord's audio, transcribes and translates it back for you to hear.
+
+> **Non-goals:** this is not a SaaS product, not a Google Translate competitor, and doesn't try to be. It's a tool for people who game/chat with someone speaking another language and want a bridge that doesn't depend on the cloud.
+
+### Highlights
+
+- 🔒 **100% local** — nothing leaves your machine. No API key, no cloud, no telemetry.
+- ⚡ **p50 ~450 ms** — `small` + CUDA fp16 is the sweet spot: fast *and* accurate.
+- 🔁 **Bidirectional & simultaneous** — two independent pipelines (SPEAK / LISTEN) run at once.
+- 🌐 **Language detection** — if you already spoke the target language, it skips translation.
+- 🎚️ **Optional passthrough**, 🎛️ **reactive web UI** (WebSocket level meters + live p50/p95 latency), 🌗 light/dark themes, 🌎 PT/EN i18n, 🎧 WASAPI loopback, 🪶 lean deps (no torch).
+
+### Stack
+
+faster-whisper 1.2 (+ CTranslate2) · Argos Translate (pb ↔ en) · Piper TTS · sounddevice + WebRTC VAD + numpy/scipy · FastAPI + uvicorn + WebSocket · optional NVIDIA CUDA 12 + pywebview + VB-CABLE.
+
+### Quick start
+
+```bash
+git clone https://github.com/caioross/Laguna_Translate.git
+cd Laguna_Translate
+C:/Python313/python.exe -m pip install -r requirements.txt
+C:/Python313/python.exe laguna_server.py   # opens http://127.0.0.1:7531
+```
+
+Models auto-download on first run (~800 MB). Two panels — **SPEAK** (PT→EN) and **LISTEN** (EN→PT) — with everything configurable and live metrics. For Discord, install **VB-CABLE** and point Discord's input at the renamed virtual device. CLI/offline/stress modes are available (`fase0_poc.py`, `test_offline.py`, `stress_*.py`).
+
+> The full setup, performance tables, Discord wiring, architecture diagrams and technical notes are documented in detail in the Portuguese section above — the code, UI and config are themselves bilingual (PT/EN).
+
+---
+
+## 📜 License
+
+**MIT** — see [LICENSE](LICENSE). Do whatever you want: commercial, personal, fork, remix, rebrand. Just keep the copyright and don't sue me if it breaks. 🤝
+
+---
+
 <div align="center">
 
 _Construído com ☕ e muita fé no `faster-whisper`._
+
+*Parte do ecossistema de projetos de **Caio**.*
 
 </div>
