@@ -76,3 +76,6 @@ laguna_prefs.json
 node_modules/
 package-lock.json
 /docs
+
+# Site de apresentacao = repositorio separado
+/site/
