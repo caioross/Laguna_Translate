@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sanity:
+    name: compile + lint mínimo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Byte-compile todos os .py
+        run: python -m compileall -q .
+      - name: Ruff (só erros de sintaxe/nomes indefinidos)
+        run: |
+          python -m pip install --quiet ruff
+          ruff check --select E9,F63,F7,F82 --output-format github .

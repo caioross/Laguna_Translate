@@ -16,7 +16,11 @@ dist/
 .tox/
 .coverage
 htmlcov/
-.claude/
+# .claude local (worktrees, settings) fica fora — EXCETO a skill da frota, que é versionada
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/laguna-fleet-ops/
 .docs/
 
 # ===== Virtual envs =====
@@ -75,7 +79,9 @@ laguna_prefs.json
 # ===== Node (caso adicionemos build de frontend) =====
 node_modules/
 package-lock.json
-/docs
+# docs locais (plano técnico) ficam fora — EXCETO docs/fleet (HANDBOOK da frota), versionado
+/docs/*
+!/docs/fleet/
 
 # Site de apresentacao = repositorio separado
 /site/
