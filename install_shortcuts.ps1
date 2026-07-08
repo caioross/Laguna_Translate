@@ -9,7 +9,7 @@ $launcher = Join-Path $here "Laguna.vbs"
 $iconPath = Join-Path $here "static\laguna.ico"
 
 if (-not (Test-Path $launcher)) {
-    Write-Error "Nao achei $launcher"
+    Write-Error "Launcher not found / Nao achei: $launcher"
     exit 1
 }
 
@@ -46,12 +46,12 @@ if (-not (Test-Path $startMenu)) {
 $desktopLnk = Join-Path $desktop   "Laguna Translator.lnk"
 $startLnk   = Join-Path $startMenu "Laguna Translator.lnk"
 
-New-Shortcut -Path $desktopLnk -Target $launcher -Icon $iconPath -Description "Laguna Translator - tradutor de voz local" -WorkingDirectory $here
-New-Shortcut -Path $startLnk   -Target $launcher -Icon $iconPath -Description "Laguna Translator - tradutor de voz local" -WorkingDirectory $here
+New-Shortcut -Path $desktopLnk -Target $launcher -Icon $iconPath -Description "Laguna Translator - local voice translator / tradutor de voz local" -WorkingDirectory $here
+New-Shortcut -Path $startLnk   -Target $launcher -Icon $iconPath -Description "Laguna Translator - local voice translator / tradutor de voz local" -WorkingDirectory $here
 
 Write-Host ""
-Write-Host "Atalhos criados:"
+Write-Host "Shortcuts created / Atalhos criados:"
 Write-Host "  Desktop:     $desktopLnk"
 Write-Host "  Start Menu:  $startLnk"
 Write-Host ""
-Write-Host "Dica: clique no atalho e o app abre em http://127.0.0.1:7531 no seu navegador."
+Write-Host "Tip / Dica: click the shortcut and the app opens at http://127.0.0.1:7531 in your browser / clique no atalho e o app abre em http://127.0.0.1:7531 no seu navegador."

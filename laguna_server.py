@@ -88,7 +88,13 @@ async def api_status() -> JSONResponse:
 @app.post("/api/start/{direction}")
 async def api_start(direction: str, cfg: dict) -> JSONResponse:
     if direction not in ("falar", "escutar"):
-        return JSONResponse({"error": "direction deve ser falar|escutar"}, status_code=400)
+        return JSONResponse(
+            {
+                "error_key": "error.invalid_direction",
+                "error": "direction deve ser falar|escutar",
+            },
+            status_code=400,
+        )
     with _lock:
         existing = _workers.get(direction)
         if existing is not None:
@@ -129,11 +135,23 @@ async def api_stop(direction: str) -> JSONResponse:
 async def api_gain(direction: str, body: dict) -> JSONResponse:
     """Ajusta ganho de saida e/ou passthrough sem reiniciar o worker."""
     if direction not in ("falar", "escutar"):
-        return JSONResponse({"error": "direction deve ser falar|escutar"}, status_code=400)
+        return JSONResponse(
+            {
+                "error_key": "error.invalid_direction",
+                "error": "direction deve ser falar|escutar",
+            },
+            status_code=400,
+        )
     with _lock:
         w = _workers.get(direction)
     if w is None:
-        return JSONResponse({"ok": True, "note": "worker parado; ganho sera aplicado no proximo start"})
+        return JSONResponse(
+            {
+                "ok": True,
+                "note_key": "note.worker_stopped_gain_deferred",
+                "note": "worker parado; ganho sera aplicado no proximo start",
+            }
+        )
     if "output_gain_db" in body:
         w.set_output_gain_db(body["output_gain_db"])
     if "passthrough_gain_db" in body:
