@@ -23,3 +23,18 @@ jobs:
         run: |
           python -m pip install --quiet ruff
           ruff check --select E9,F63,F7,F82 --output-format github .
+
+  tests-unit:
+    name: pytest (lógica pura, sem áudio/modelos/GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # numpy é dep de topo de fase0_poc/laguna_core; sounddevice é stubbado
+      # em tests_unit/conftest.py, então PortAudio não é necessário aqui.
+      - name: Instala dependências mínimas dos testes
+        run: python -m pip install --quiet pytest numpy
+      - name: pytest tests_unit/
+        run: python -m pytest tests_unit/ -q
