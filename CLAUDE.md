@@ -16,10 +16,11 @@ python laguna_app.py                    # janela nativa (pywebview)
 python fase0_poc.py --list-devices      # CLI/debug
 python test_offline.py <wav 16k mono> --direction pt2en -o out.wav   # pipeline sem mic
 python bench_fase0.py --model small --device cuda                    # benchmark (alvo p50 < 450ms)
+python -m pytest tests_unit/ -q                                      # testes de lógica pura (<30s, sem áudio/modelos/GPU)
 ```
 
 ## Gate antes de qualquer PR
-1. `python -m compileall -q .` + `python -c "import fase0_poc, laguna_core, laguna_server"`
+1. `python -m compileall -q .` + `python -c "import fase0_poc, laguna_core, laguna_server"` + `python -m pytest tests_unit/ -q`
 2. Tocou pipeline → `test_offline.py` num WAV de referência; tocou `static/` → `node --check` + paridade i18n PT/EN.
 3. Mudou VAD/defaults de modelo → benchmark antes/depois no corpo da PR.
 
