@@ -47,6 +47,12 @@ window.LAGUNA_I18N = {
     "tip.meter_in": "Nível de áudio de ENTRADA (captura do microfone ou loopback).",
     "tip.meter_out": "Nível de áudio de SAÍDA (tradução sintetizada + eventual passthrough).",
 
+    // aria-labels (a11y)
+    "aria.lang_toggle": "Alternar idioma",
+    "aria.theme_toggle": "Alternar tema",
+    "aria.meter_in": "Nível de entrada",
+    "aria.meter_out": "Nível de saída",
+
     // labels
     "label.langs": "Idioma falado → alvo",
     "label.mic": "🎤 Microfone (captura)",
@@ -175,6 +181,12 @@ window.LAGUNA_I18N = {
     "tip.meter_in": "INPUT audio level (mic or loopback capture).",
     "tip.meter_out": "OUTPUT audio level (synthesized translation + optional passthrough).",
 
+    // aria-labels (a11y)
+    "aria.lang_toggle": "Toggle language",
+    "aria.theme_toggle": "Toggle theme",
+    "aria.meter_in": "Input level",
+    "aria.meter_out": "Output level",
+
     // labels
     "label.langs": "Spoken language → target",
     "label.mic": "🎤 Microphone (capture)",
@@ -279,6 +291,12 @@ window.applyI18n = function (lang) {
   document.querySelectorAll("[data-tip-i18n]").forEach((el) => {
     const key = el.getAttribute("data-tip-i18n");
     el.setAttribute("data-tip", window.LAGUNA_T(key));
+  });
+
+  // aria-labels (acessibilidade — botões de ícone e progressbars dos meters)
+  document.querySelectorAll("[data-aria-i18n]").forEach((el) => {
+    const key = el.getAttribute("data-aria-i18n");
+    el.setAttribute("aria-label", window.LAGUNA_T(key));
   });
 
   // options ( <option data-i18n-opt="..."> )

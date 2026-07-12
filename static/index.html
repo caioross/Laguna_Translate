@@ -19,8 +19,8 @@
     <div class="badges">
       <span id="laguna-badge" class="badge neutral" data-tip-i18n="tip.laguna_badge">🎛 <span data-i18n="badge.devices">Dispositivos</span>: —</span>
       <span id="gpu-badge" class="badge neutral" data-tip-i18n="tip.gpu_badge">⚡ —</span>
-      <button id="lang-toggle" class="icon-btn" data-tip-i18n="tip.lang_toggle" aria-label="language">🌐</button>
-      <button id="theme-toggle" class="icon-btn" data-tip-i18n="tip.theme_toggle" aria-label="toggle theme">🌙</button>
+      <button id="lang-toggle" class="icon-btn" data-tip-i18n="tip.lang_toggle" data-aria-i18n="aria.lang_toggle" aria-label="Alternar idioma">🌐</button>
+      <button id="theme-toggle" class="icon-btn" data-tip-i18n="tip.theme_toggle" data-aria-i18n="aria.theme_toggle" aria-label="Alternar tema">🌙</button>
     </div>
   </header>
 
@@ -30,10 +30,10 @@
       <header class="panel-head">
         <h2><span class="emoji">🎙️</span> <span data-i18n="falar.title">FALAR</span></h2>
         <p data-i18n="falar.subtitle">você → Discord (tradução sai como se fosse seu mic)</p>
-        <span class="status idle" data-role="status" data-i18n="status.idle">parado</span>
+        <span class="status idle" data-role="status" data-i18n="status.idle" aria-live="polite">parado</span>
         <div class="meters">
-          <div class="meter" data-tip-i18n="tip.meter_in"><span class="meter-label" data-i18n="meter.in">entrada</span><span class="meter-bar"><span class="meter-fill" data-role="meter-in"></span></span></div>
-          <div class="meter" data-tip-i18n="tip.meter_out"><span class="meter-label" data-i18n="meter.out">saída</span><span class="meter-bar"><span class="meter-fill" data-role="meter-out"></span></span></div>
+          <div class="meter" data-tip-i18n="tip.meter_in"><span class="meter-label" data-i18n="meter.in">entrada</span><span class="meter-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-aria-i18n="aria.meter_in"><span class="meter-fill" data-role="meter-in"></span></span></div>
+          <div class="meter" data-tip-i18n="tip.meter_out"><span class="meter-label" data-i18n="meter.out">saída</span><span class="meter-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-aria-i18n="aria.meter_out"><span class="meter-fill" data-role="meter-out"></span></span></div>
         </div>
       </header>
 
@@ -124,11 +124,11 @@
       <div class="live">
         <div class="live-block" data-tip-i18n="tip.stt_block">
           <div class="live-label"><span class="dot stt"></span> <span data-i18n="live.stt">Transcrição</span></div>
-          <div class="live-text" data-role="stt">—</div>
+          <div class="live-text" data-role="stt" aria-live="polite">—</div>
         </div>
         <div class="live-block" data-tip-i18n="tip.mt_block">
           <div class="live-label"><span class="dot mt"></span> <span data-i18n="live.mt">Tradução</span></div>
-          <div class="live-text" data-role="mt">—</div>
+          <div class="live-text" data-role="mt" aria-live="polite">—</div>
         </div>
         <div class="metrics" data-role="metrics" data-tip-i18n="tip.metrics">
           <span>p50 <b data-role="p50">—</b>ms</span>
@@ -143,10 +143,10 @@
       <header class="panel-head">
         <h2><span class="emoji">👂</span> <span data-i18n="escutar.title">ESCUTAR</span></h2>
         <p data-i18n="escutar.subtitle">Discord → você (tradução toca no seu fone)</p>
-        <span class="status idle" data-role="status" data-i18n="status.idle">parado</span>
+        <span class="status idle" data-role="status" data-i18n="status.idle" aria-live="polite">parado</span>
         <div class="meters">
-          <div class="meter" data-tip-i18n="tip.meter_in"><span class="meter-label" data-i18n="meter.in">entrada</span><span class="meter-bar"><span class="meter-fill" data-role="meter-in"></span></span></div>
-          <div class="meter" data-tip-i18n="tip.meter_out"><span class="meter-label" data-i18n="meter.out">saída</span><span class="meter-bar"><span class="meter-fill" data-role="meter-out"></span></span></div>
+          <div class="meter" data-tip-i18n="tip.meter_in"><span class="meter-label" data-i18n="meter.in">entrada</span><span class="meter-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-aria-i18n="aria.meter_in"><span class="meter-fill" data-role="meter-in"></span></span></div>
+          <div class="meter" data-tip-i18n="tip.meter_out"><span class="meter-label" data-i18n="meter.out">saída</span><span class="meter-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-aria-i18n="aria.meter_out"><span class="meter-fill" data-role="meter-out"></span></span></div>
         </div>
       </header>
 
@@ -232,11 +232,11 @@
       <div class="live">
         <div class="live-block" data-tip-i18n="tip.stt_block">
           <div class="live-label"><span class="dot stt"></span> <span data-i18n="live.stt">Transcrição</span></div>
-          <div class="live-text" data-role="stt">—</div>
+          <div class="live-text" data-role="stt" aria-live="polite">—</div>
         </div>
         <div class="live-block" data-tip-i18n="tip.mt_block">
           <div class="live-label"><span class="dot mt"></span> <span data-i18n="live.mt">Tradução</span></div>
-          <div class="live-text" data-role="mt">—</div>
+          <div class="live-text" data-role="mt" aria-live="polite">—</div>
         </div>
         <div class="metrics" data-role="metrics" data-tip-i18n="tip.metrics">
           <span>p50 <b data-role="p50">—</b>ms</span>
