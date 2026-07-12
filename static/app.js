@@ -440,13 +440,54 @@ function escapeHTML(s) {
   }[c]));
 }
 
+// Indicador global de conexão WS: reaproveita as classes de badge (ok/warn/err)
+// e mantém o rótulo traduzível — seta o data-i18n do label para que o toggle
+// PT/EN reaplique o estado atual via applyI18n.
+function setConnState(cls, key) {
+  const el = document.getElementById('conn-badge');
+  if (!el) return;
+  el.className = `badge ${cls}`;
+  const label = el.querySelector('[data-role="conn-label"]');
+  if (label) {
+    label.setAttribute('data-i18n', key);
+    label.textContent = window.LAGUNA_T ? window.LAGUNA_T(key) : key;
+  }
+}
+
+// Backoff exponencial com teto para reconexão do WS.
+const WS_BACKOFF_MIN = 500;
+const WS_BACKOFF_MAX = 10000;
+let wsBackoff = WS_BACKOFF_MIN;
+let wsReconnectTimer = null;
+
+function scheduleReconnect() {
+  // No teto tratamos como offline (servidor provavelmente caiu); antes disso,
+  // "reconectando" para sinalizar que ainda estamos tentando.
+  const atCap = wsBackoff >= WS_BACKOFF_MAX;
+  setConnState(atCap ? 'err' : 'warn', atCap ? 'conn.offline' : 'conn.reconnecting');
+  clearTimeout(wsReconnectTimer);
+  wsReconnectTimer = setTimeout(connectWS, wsBackoff);
+  wsBackoff = Math.min(wsBackoff * 2, WS_BACKOFF_MAX);
+}
+
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  let ws;
+  try {
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+  } catch {
+    scheduleReconnect();
+    return;
+  }
+  ws.onopen = () => {
+    wsBackoff = WS_BACKOFF_MIN;
+    setConnState('ok', 'conn.online');
+  };
   ws.onmessage = e => {
     try { onEvent(JSON.parse(e.data)); } catch {}
   };
-  ws.onclose = () => setTimeout(connectWS, 1000);
+  // onerror não reagenda: o onclose que o segue faz o reschedule (evita timer duplo).
+  ws.onclose = () => scheduleReconnect();
 }
 
 function applyTheme(theme) {

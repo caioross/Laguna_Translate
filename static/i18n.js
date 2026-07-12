@@ -8,6 +8,10 @@ window.LAGUNA_I18N = {
     "badge.devices": "Dispositivos",
     "tip.laguna_badge": "Status dos dispositivos virtuais (VB-CABLE ou Laguna). Verde = renomeado para Laguna. Amarelo = instalado mas não renomeado. Vermelho = não detectado.",
     "tip.gpu_badge": "Indicador de GPU/CPU usado pelo modelo STT.",
+    "tip.conn_badge": "Estado da conexão com o servidor local. Verde = conectado; amarelo = reconectando; vermelho = servidor offline.",
+    "conn.online": "conectado",
+    "conn.reconnecting": "reconectando…",
+    "conn.offline": "offline",
     "tip.lang_toggle": "Alternar idioma do painel (PT ↔ EN).",
     "tip.theme_toggle": "Alternar tema claro/escuro (atalho: Shift+T).",
 
@@ -142,6 +146,10 @@ window.LAGUNA_I18N = {
     "badge.devices": "Devices",
     "tip.laguna_badge": "Virtual device status (VB-CABLE or Laguna). Green = renamed to Laguna. Yellow = installed but not renamed. Red = not detected.",
     "tip.gpu_badge": "GPU/CPU indicator used by the STT model.",
+    "tip.conn_badge": "Local server connection state. Green = connected; yellow = reconnecting; red = server offline.",
+    "conn.online": "connected",
+    "conn.reconnecting": "reconnecting…",
+    "conn.offline": "offline",
     "tip.lang_toggle": "Toggle UI language (PT ↔ EN).",
     "tip.theme_toggle": "Toggle light/dark theme (shortcut: Shift+T).",
 
