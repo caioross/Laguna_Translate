@@ -1,0 +1,24 @@
+# requirements.lock — versões EXATAS comprovadas no ambiente canônico
+# (Python 3.13 em C:\Python313), em produção no clone do dono.
+#
+# Reprodução determinística (recomendado para clonar sem surpresas):
+#   C:/Python313/python.exe -m pip install -r requirements.lock
+#
+# O requirements.txt carrega apenas bounds de versão (protege contra um major
+# quebrado no futuro); este lock fixa o que roda hoje. Curado via `pip show` por
+# pacote (não `pip freeze` — evita arrastar deps de outros projetos do ambiente).
+# Inclui as transitivas críticas: ctranslate2 (engine do faster-whisper) e
+# onnxruntime (engine do piper-tts).
+
+# --- diretas (mesmo conjunto do requirements.txt) ---
+faster-whisper==1.2.1
+argostranslate==1.10.0
+piper-tts==1.4.2
+sounddevice==0.5.5
+numpy==2.4.4
+scipy==1.17.1
+webrtcvad-wheels==2.0.14
+
+# --- transitivas críticas (engines de STT/TTS) ---
+ctranslate2==4.6.3
+onnxruntime==1.24.1

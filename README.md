@@ -316,6 +316,8 @@ C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 C:/Python313/python.exe -m pip install pywebview fastapi uvicorn
 ```
 
+> Para uma instalação **reproduzível** com as versões exatas comprovadas, use o `requirements.lock` no lugar do `requirements.txt`: `C:/Python313/python.exe -m pip install -r requirements.lock`.
+
 Modelos baixam sozinhos no primeiro run (~800MB total): Whisper small, vozes Piper, pacotes Argos pb↔en.
 
 ### Rodar a UI web
@@ -861,6 +863,8 @@ C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 # For the .exe-like launcher with a native window (optional)
 C:/Python313/python.exe -m pip install pywebview fastapi uvicorn
 ```
+
+> For a **reproducible** install with the exact proven versions, use `requirements.lock` instead of `requirements.txt`: `C:/Python313/python.exe -m pip install -r requirements.lock`.
 
 Models auto-download on first run (~800 MB total): Whisper small, Piper voices, Argos pb↔en packages.
 
