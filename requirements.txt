@@ -1,7 +1,7 @@
-faster-whisper
-argostranslate
-piper-tts
-sounddevice
-numpy
-scipy
-webrtcvad-wheels
+faster-whisper>=1.2,<2
+argostranslate>=1.10,<2
+piper-tts>=1.4,<2
+sounddevice>=0.5,<0.6
+numpy>=2.4,<3
+scipy>=1.17,<2
+webrtcvad-wheels>=2.0,<3
