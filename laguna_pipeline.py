@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,51 @@ class WebRTCVADGate:
             return False
         pcm_i16 = np.clip(frame_pcm * 32768.0, -32768, 32767).astype(np.int16)
         return self.vad.is_speech(pcm_i16.tobytes(), self.sr)
+
+
+class VADSegmenter:
+    """Máquina de estados pura do segmentador de fala (pré-buffer / hangover /
+    segmento mín-máx), extraída do laço de `segmenter_worker` (fase0_poc) para
+    ser determinística e testável sem threads, queues, microfone ou webrtcvad.
+
+    Alimente frame a frame com `push(frame, is_speech)`; devolve o segmento
+    (`np.ndarray`) no instante em que ele fecha, ou `None` enquanto acumula (ou
+    quando o segmento fechado é curto demais e é descartado). A decisão de
+    `is_speech` é do chamador (o VAD real ou um roteiro de teste): aqui só mora
+    a política de segmentação. Comportamento idêntico ao laço original — é
+    refactor, não mudança da política de VAD (issue #17)."""
+
+    def __init__(self) -> None:
+        self.pre_max = PRE_SPEECH_BUFFER_MS // VAD_FRAME_MS
+        self.silence_max = SILENCE_HANGOVER_MS // VAD_FRAME_MS
+        self.min_speech = MIN_SPEECH_MS // VAD_FRAME_MS
+        self.max_frames = MAX_SEGMENT_MS // VAD_FRAME_MS
+
+        self.pre_buf: deque[np.ndarray] = deque(maxlen=self.pre_max)
+        self.speaking: list[np.ndarray] = []
+        self.silence_run = 0
+        self.in_speech = False
+
+    def push(self, frame: np.ndarray, is_speech: bool) -> np.ndarray | None:
+        if not self.in_speech:
+            self.pre_buf.append(frame)
+            if is_speech:
+                self.in_speech = True
+                self.speaking = list(self.pre_buf)
+                self.pre_buf.clear()
+                self.silence_run = 0
+            return None
+
+        self.speaking.append(frame)
+        self.silence_run = 0 if is_speech else self.silence_run + 1
+        force_flush = len(self.speaking) >= self.max_frames
+        if self.silence_run >= self.silence_max or force_flush:
+            seg = np.concatenate(self.speaking) if len(self.speaking) >= self.min_speech else None
+            self.in_speech = False
+            self.speaking = []
+            self.silence_run = 0
+            return seg
+        return None
 
 
 class STT:
