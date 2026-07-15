@@ -1,11 +1,11 @@
-"""Alvo #1 — ARGOS_CODE_MAP / mapeamento pt→pb (fase0_poc.py).
+"""Alvo #1 — ARGOS_CODE_MAP / mapeamento pt→pb (laguna_pipeline.py).
 
 O Argos usa `pb` para português; o resto do pipeline (Whisper, UI) usa `pt`.
 A conversão acontece em `ArgosMT.__init__` via `ARGOS_CODE_MAP.get(code, code)`.
 A distinção pt/pb é intencional (ver CLAUDE.md) — estes testes fixam o contrato.
 """
 
-from fase0_poc import ARGOS_CODE_MAP
+from laguna_pipeline import ARGOS_CODE_MAP
 
 
 def test_pt_mapeia_para_pb():
