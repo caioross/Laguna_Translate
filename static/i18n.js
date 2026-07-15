@@ -14,6 +14,7 @@ window.LAGUNA_I18N = {
     "conn.offline": "offline",
     "tip.lang_toggle": "Alternar idioma do painel (PT ↔ EN).",
     "tip.theme_toggle": "Alternar tema claro/escuro (atalho: Shift+T).",
+    "tip.refresh_devices": "Re-detecta os dispositivos de áudio sem recarregar a página. Use ao conectar um fone ou renomear o CABLE depois de abrir o painel.",
 
     // FALAR
     "falar.title": "FALAR",
@@ -54,6 +55,7 @@ window.LAGUNA_I18N = {
     // aria-labels (a11y)
     "aria.lang_toggle": "Alternar idioma",
     "aria.theme_toggle": "Alternar tema",
+    "aria.refresh_devices": "Atualizar dispositivos",
     "aria.meter_in": "Nível de entrada",
     "aria.meter_out": "Nível de saída",
 
@@ -116,7 +118,7 @@ window.LAGUNA_I18N = {
       <li>Abra <b>Windows Sound Settings → Mais configurações de som</b>.</li>
       <li>Em <b>Gravação</b>, clique direito em "CABLE Output" → Propriedades → aba <b>Geral</b> → renomeie para <code>Laguna Translator Mic</code>.</li>
       <li>Em <b>Reprodução</b>, clique direito em "CABLE Input" → Propriedades → renomeie para <code>Laguna Translator Output</code>.</li>
-      <li>Recarregue esta página. Os devices aparecem marcados com 🌊.</li>
+      <li>Clique em <b>🔄 Atualizar dispositivos</b> no topo. Os devices aparecem marcados com 🌊.</li>
       <li>No Discord → Configurações → Voz e Vídeo:
         <ul>
           <li><b>Dispositivo de entrada:</b> Laguna Translator Mic</li>
@@ -152,6 +154,7 @@ window.LAGUNA_I18N = {
     "conn.offline": "offline",
     "tip.lang_toggle": "Toggle UI language (PT ↔ EN).",
     "tip.theme_toggle": "Toggle light/dark theme (shortcut: Shift+T).",
+    "tip.refresh_devices": "Re-detect audio devices without reloading the page. Use it after plugging in headphones or renaming the CABLE once the panel is already open.",
 
     // FALAR
     "falar.title": "SPEAK",
@@ -192,6 +195,7 @@ window.LAGUNA_I18N = {
     // aria-labels (a11y)
     "aria.lang_toggle": "Toggle language",
     "aria.theme_toggle": "Toggle theme",
+    "aria.refresh_devices": "Refresh devices",
     "aria.meter_in": "Input level",
     "aria.meter_out": "Output level",
 
@@ -254,7 +258,7 @@ window.LAGUNA_I18N = {
       <li>Open <b>Windows Sound Settings → More sound settings</b>.</li>
       <li>Under <b>Recording</b>, right-click "CABLE Output" → Properties → <b>General</b> tab → rename to <code>Laguna Translator Mic</code>.</li>
       <li>Under <b>Playback</b>, right-click "CABLE Input" → Properties → rename to <code>Laguna Translator Output</code>.</li>
-      <li>Reload this page. Devices appear tagged with 🌊.</li>
+      <li>Click <b>🔄 Refresh devices</b> at the top. Devices appear tagged with 🌊.</li>
       <li>In Discord → Settings → Voice & Video:
         <ul>
           <li><b>Input device:</b> Laguna Translator Mic</li>

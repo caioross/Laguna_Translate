@@ -113,6 +113,48 @@ async function loadDevices() {
   refreshVolumeLabels('escutar');
 }
 
+// Re-detecta dispositivos sem recarregar a página. Reaproveita loadDevices()
+// e preserva a escolha explícita do usuário quando o device ainda existe —
+// não deixa a preferência automática de populatePanels() sobrescrevê-la.
+async function refreshDevices() {
+  const btn = document.getElementById('refresh-devices');
+  if (btn && btn.disabled) return; // evita reentrância se clicar em sequência
+
+  // snapshot dos selects atuais ANTES de re-popular (fillSelect limpa as opções)
+  const snapshot = {};
+  for (const dir of ['falar', 'escutar']) {
+    const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
+    if (!panel) continue;
+    snapshot[dir] = {};
+    for (const [role, prop] of PERSIST_FIELDS[dir]) {
+      if (prop !== 'value') continue;
+      const el = $role(panel, role);
+      if (el && el.tagName === 'SELECT') snapshot[dir][role] = el.value;
+    }
+  }
+
+  if (btn) { btn.disabled = true; btn.classList.add('is-refreshing'); }
+  try {
+    await loadDevices();
+    // re-aplica a seleção capturada por cima da preferência automática,
+    // mas só quando o device continua existindo entre as opções
+    for (const dir of ['falar', 'escutar']) {
+      const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
+      if (!panel || !snapshot[dir]) continue;
+      for (const [role, val] of Object.entries(snapshot[dir])) {
+        if (val === '' || val == null) continue;
+        const sel = $role(panel, role);
+        if (sel && Array.from(sel.options).some(o => o.value === String(val))) {
+          sel.value = String(val);
+          savePanelConfig(dir);
+        }
+      }
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove('is-refreshing'); }
+  }
+}
+
 function refreshVolumeLabels(dir) {
   const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
   if (!panel) return;
@@ -569,6 +611,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   initLang();
   bindPanel('falar');
   bindPanel('escutar');
+  const refreshBtn = document.getElementById('refresh-devices');
+  if (refreshBtn) refreshBtn.addEventListener('click', refreshDevices);
   await loadDevices();
   connectWS();
 });
