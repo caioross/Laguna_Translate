@@ -5,8 +5,8 @@ Tradutor de voz em tempo real, **100% local** (PT↔EN), feito pra Discord. Pipe
 ## Regras de ouro
 - **Promessa inviolável:** nenhum áudio/texto/telemetria sai da máquina em runtime (exceção única: download inicial de modelos). Latência é a feature (p50 ~450ms em GPU small). Nada pode competir com isso.
 - Sem torch e sem dependência pesada nova; diff mínimo; convenções vizinhas.
-- `pt` vs `pb` no Argos é intencional (`ARGOS_CODE_MAP` em `fase0_poc.py`); Whisper usa `pt`. Não "consertar".
-- `laguna_core.py` importa de `fase0_poc.py` por legado — dívida conhecida; NÃO adicionar imports novos de `fase0_poc` em código novo.
+- `pt` vs `pb` no Argos é intencional (`ARGOS_CODE_MAP` em `laguna_pipeline.py`); Whisper usa `pt`. Não "consertar".
+- `laguna_core.py` importa os engines de `laguna_pipeline.py` (desde #20; não mais de `fase0_poc.py`). NÃO adicionar imports novos de `fase0_poc` em código novo — a POC só reexporta por compat legada.
 - Não comitar `*.wav`, `*.onnx`, `models*/`, `bench_out/` (gitignore já cobre).
 
 ## Comandos (Python canônico: `C:\Python313\python.exe`)
@@ -26,7 +26,8 @@ python -m pytest tests_unit/ -q                                      # testes de
 
 ## Mapa
 - `laguna_core.py` — DirectionWorker/DirectionConfig (2 direções simultâneas)
-- `fase0_poc.py` — STT, ArgosMT, PiperTTS, WebRTCVADGate, detect_device (legado ainda em produção)
+- `laguna_pipeline.py` — engines STT/ArgosMT/PiperTTS/WebRTCVADGate + VADSegmenter, detect_device, constantes VAD, `ARGOS_CODE_MAP` (casa canônica desde #7)
+- `fase0_poc.py` — CLI/PoC (`--list-devices`, `segmenter_worker`); reexporta os engines de `laguna_pipeline` por compat (bench/stress/test_offline/fase1)
 - `laguna_server.py` — FastAPI + WS `/ws` (porta 7531); `static/` — UI web (app.js, i18n.js)
 - `fase1_app.py` — legado morto (PySide6); não investir
 - Site de apresentação = repo separado (`caioross/LagunaTranslate-site`)
