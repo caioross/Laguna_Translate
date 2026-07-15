@@ -17,7 +17,6 @@ import queue
 import threading
 import time
 import wave
-from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -46,6 +45,7 @@ from laguna_pipeline import (  # noqa: F401
     ArgosMT,
     PiperTTS,
     STT,
+    VADSegmenter,
     WebRTCVADGate,
     _register_cuda_dlls,
     detect_device,
@@ -107,15 +107,9 @@ def segmenter_worker(
     vad: WebRTCVADGate,
     stop_evt: threading.Event,
 ) -> None:
-    pre_max = PRE_SPEECH_BUFFER_MS // VAD_FRAME_MS
-    silence_max = SILENCE_HANGOVER_MS // VAD_FRAME_MS
-    min_speech = MIN_SPEECH_MS // VAD_FRAME_MS
-    max_frames = MAX_SEGMENT_MS // VAD_FRAME_MS
-
-    pre_buf: deque[np.ndarray] = deque(maxlen=pre_max)
-    speaking: list[np.ndarray] = []
-    silence_run = 0
-    in_speech = False
+    # A política de segmentação (pré-buffer / hangover / mín-máx) vive em
+    # VADSegmenter (laguna_pipeline); aqui só fiamos queues/thread e delegamos.
+    segmenter = VADSegmenter()
 
     while not stop_evt.is_set():
         try:
@@ -123,29 +117,12 @@ def segmenter_worker(
         except queue.Empty:
             continue
 
-        is_speech = vad.is_speech(frame)
-
-        if not in_speech:
-            pre_buf.append(frame)
-            if is_speech:
-                in_speech = True
-                speaking = list(pre_buf)
-                pre_buf.clear()
-                silence_run = 0
-        else:
-            speaking.append(frame)
-            silence_run = 0 if is_speech else silence_run + 1
-            force_flush = len(speaking) >= max_frames
-            if silence_run >= silence_max or force_flush:
-                if len(speaking) >= min_speech:
-                    seg = np.concatenate(speaking)
-                    try:
-                        seg_q.put_nowait(seg)
-                    except queue.Full:
-                        log("seg_q cheia, descartando segmento antigo")
-                in_speech = False
-                speaking = []
-                silence_run = 0
+        seg = segmenter.push(frame, vad.is_speech(frame))
+        if seg is not None:
+            try:
+                seg_q.put_nowait(seg)
+            except queue.Full:
+                log("seg_q cheia, descartando segmento antigo")
 
 
 def capture_worker(audio_q: "queue.Queue[np.ndarray]", stop_evt: threading.Event, device: Optional[int]) -> None:
