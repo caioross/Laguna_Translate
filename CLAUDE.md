@@ -26,7 +26,7 @@ python -m pytest tests_unit/ -q                                      # testes de
 
 ## Mapa
 - `laguna_core.py` — DirectionWorker/DirectionConfig (2 direções simultâneas)
-- `laguna_pipeline.py` — engines STT/ArgosMT/PiperTTS/WebRTCVADGate + VADSegmenter, detect_device, constantes VAD, `ARGOS_CODE_MAP` (casa canônica desde #7)
+- `laguna_pipeline.py` — engines STT/ArgosMT/PiperTTS/WebRTCVADGate, detect_device, constantes VAD, `ARGOS_CODE_MAP` (casa canônica desde #7)
 - `fase0_poc.py` — CLI/PoC (`--list-devices`, `segmenter_worker`); reexporta os engines de `laguna_pipeline` por compat (bench/stress/test_offline/fase1)
 - `laguna_server.py` — FastAPI + WS `/ws` (porta 7531); `static/` — UI web (app.js, i18n.js)
 - `fase1_app.py` — legado morto (PySide6); não investir
