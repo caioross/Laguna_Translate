@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from fase0_poc import ArgosMT, PiperTTS, STT, detect_device, log
+from laguna_pipeline import ArgosMT, PiperTTS, STT, detect_device, log
 
 
 def read_wav_mono_16k(path: Path) -> np.ndarray:

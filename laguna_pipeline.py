@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -252,3 +253,36 @@ def detect_device() -> tuple[str, str]:
     except Exception:
         pass
     return "cpu", "int8"
+
+
+@dataclass
+class Stats:
+    total: list[float] = field(default_factory=list)
+    stt: list[float] = field(default_factory=list)
+    mt: list[float] = field(default_factory=list)
+    tts: list[float] = field(default_factory=list)
+
+    def add(self, t_stt: float, t_mt: float, t_tts: float) -> None:
+        self.stt.append(t_stt)
+        self.mt.append(t_mt)
+        self.tts.append(t_tts)
+        self.total.append(t_stt + t_mt + t_tts)
+
+    @staticmethod
+    def _pct(xs: list[float], p: float) -> float:
+        if not xs:
+            return 0.0
+        return float(np.percentile(xs, p))
+
+    def report(self) -> str:
+        if not self.total:
+            return "(sem dados)"
+        lines = [f"--- N={len(self.total)} segmentos ---"]
+        for name, xs in [("TOTAL", self.total), ("STT  ", self.stt), ("MT   ", self.mt), ("TTS  ", self.tts)]:
+            lines.append(
+                f"  {name}  p50={self._pct(xs, 50):7.0f}ms  "
+                f"p95={self._pct(xs, 95):7.0f}ms  "
+                f"p99={self._pct(xs, 99):7.0f}ms  "
+                f"max={max(xs):7.0f}ms"
+            )
+        return "\n".join(lines)

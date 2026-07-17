@@ -17,73 +17,30 @@ import queue
 import threading
 import time
 import wave
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import sounddevice as sd
 
-# As engines do pipeline (STT, ArgosMT, PiperTTS, WebRTCVADGate, detect_device,
-# _register_cuda_dlls, ARGOS_CODE_MAP e as constantes de VAD/sample rate) foram
-# extraídas para laguna_pipeline.py (issue #7, fatia 1 do epic #6). São
-# reexportadas aqui para compatibilidade total com os importadores existentes
-# (laguna_core, bench_fase0, test_offline, stress_*, fase1_app). Código novo deve
-# importar direto de laguna_pipeline — não adicione lógica nova neste módulo.
-from laguna_pipeline import (  # noqa: F401
-    ARGOS_CODE_MAP,
-    MAX_SEGMENT_MS,
-    MIN_SPEECH_MS,
-    MODELS_DIR,
-    PIPER_VOICES,
-    PRE_SPEECH_BUFFER_MS,
+# Este módulo é agora só a CLI de POC. As engines do pipeline, os helpers e o
+# `Stats` vivem em laguna_pipeline.py (desacoplamento — epic #6). Importamos daqui
+# apenas o que a CLI usa; o import de laguna_pipeline dispara `_register_cuda_dlls()`
+# na carga do módulo, ANTES de qualquer faster_whisper (lazy dentro de STT) — a
+# ordem original é preservada. Código novo deve importar direto de laguna_pipeline.
+from laguna_pipeline import (
     ROOT,
     SAMPLE_RATE,
-    SILENCE_HANGOVER_MS,
-    VAD_FRAME_MS,
     VAD_FRAME_SAMPLES,
     ArgosMT,
     PiperTTS,
     STT,
+    Stats,
     VADSegmenter,
     WebRTCVADGate,
-    _register_cuda_dlls,
     detect_device,
     log,
 )
-
-
-@dataclass
-class Stats:
-    total: list[float] = field(default_factory=list)
-    stt: list[float] = field(default_factory=list)
-    mt: list[float] = field(default_factory=list)
-    tts: list[float] = field(default_factory=list)
-
-    def add(self, t_stt: float, t_mt: float, t_tts: float) -> None:
-        self.stt.append(t_stt)
-        self.mt.append(t_mt)
-        self.tts.append(t_tts)
-        self.total.append(t_stt + t_mt + t_tts)
-
-    @staticmethod
-    def _pct(xs: list[float], p: float) -> float:
-        if not xs:
-            return 0.0
-        return float(np.percentile(xs, p))
-
-    def report(self) -> str:
-        if not self.total:
-            return "(sem dados)"
-        lines = [f"--- N={len(self.total)} segmentos ---"]
-        for name, xs in [("TOTAL", self.total), ("STT  ", self.stt), ("MT   ", self.mt), ("TTS  ", self.tts)]:
-            lines.append(
-                f"  {name}  p50={self._pct(xs, 50):7.0f}ms  "
-                f"p95={self._pct(xs, 95):7.0f}ms  "
-                f"p99={self._pct(xs, 99):7.0f}ms  "
-                f"max={max(xs):7.0f}ms"
-            )
-        return "\n".join(lines)
 
 
 def play(pcm: np.ndarray, sr: int) -> None:
