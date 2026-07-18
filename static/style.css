@@ -447,6 +447,17 @@ html, body {
   transform: scale(1.05);
 }
 
+/* estado "atualizando" do botão de re-detecção de dispositivos */
+.icon-btn.is-refreshing {
+  animation: laguna-spin 0.7s linear infinite;
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+@keyframes laguna-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* === VU meters === */
 .meters {
   display: flex;
