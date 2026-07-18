@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 from bench_fase0 import resample_to_16k
-from fase0_poc import ArgosMT, PiperTTS, STT, Stats, detect_device, log
+from laguna_pipeline import ArgosMT, PiperTTS, STT, Stats, detect_device, log
 
 PHRASES_EN = [
     "Hello, how are you doing today?",

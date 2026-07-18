@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from fase0_poc import ArgosMT, PiperTTS, STT, Stats, detect_device, log
+from laguna_pipeline import ArgosMT, PiperTTS, STT, Stats, detect_device, log
 
 PHRASES_PT = [
     "Olá, tudo bem com você?",

@@ -27,7 +27,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 
-from fase0_poc import (
+from laguna_pipeline import (
     ArgosMT,
     MAX_SEGMENT_MS,
     MIN_SPEECH_MS,
