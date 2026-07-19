@@ -63,6 +63,55 @@ def _resolve_device(req: str, ct: Optional[str]) -> tuple[str, str]:
     return "cpu", ct or "int8"
 
 
+class DropCounter:
+    """Contabiliza descartes de fila do DirectionWorker sob sobrecarga.
+
+    Puro (sem audio/modelo): so incrementa contadores e decide, via throttle,
+    quando vale emitir um evento `overload`. Vive no caminho de excecao
+    (`except queue.Full`) — o caminho feliz nunca o toca, entao nao ha custo
+    por frame quando nao ha descarte.
+
+    Frames (audio_q) e segmentos (seg_q) sao descartados em threads distintas;
+    um `Lock` (adquirido so no descarte, ja fora do caminho quente) mantem
+    contadores e throttle coerentes entre elas.
+    """
+
+    def __init__(self, min_emit_interval: float = 1.0) -> None:
+        self.frames = 0
+        self.segments = 0
+        self._min_interval = min_emit_interval
+        self._last_emit = float("-inf")  # garante emit no 1o descarte
+        self._seen_frame = False
+        self._seen_segment = False
+        self._lock = threading.Lock()
+
+    def record(self, kind: str, now: float) -> tuple[bool, bool]:
+        """Registra um descarte de `kind` ("frame"|"segment") ocorrido em `now`
+        (segundos monotonicos, ex.: `time.perf_counter()`).
+
+        Retorna `(should_emit, first_of_kind)`:
+        - `should_emit`: True se o chamador deve emitir `overload` agora
+          (throttle: no maximo 1 a cada `min_emit_interval` segundos);
+        - `first_of_kind`: True apenas no primeiro descarte deste `kind`
+          (para log unico, sem inundar o console).
+        """
+        with self._lock:
+            if kind == "frame":
+                self.frames += 1
+                first = not self._seen_frame
+                self._seen_frame = True
+            elif kind == "segment":
+                self.segments += 1
+                first = not self._seen_segment
+                self._seen_segment = True
+            else:
+                raise ValueError(f"kind invalido: {kind!r}")
+            should_emit = (now - self._last_emit) >= self._min_interval
+            if should_emit:
+                self._last_emit = now
+        return should_emit, first
+
+
 class DirectionWorker:
     def __init__(self, cfg: DirectionConfig, on_event: EventCb) -> None:
         self.cfg = cfg
@@ -76,6 +125,7 @@ class DirectionWorker:
         self._in_rms = 0.0
         self._out_rms = 0.0
         self._last_level_emit = 0.0
+        self._drops = DropCounter()  # descartes de fila sob sobrecarga
         # volume control (linear factors; atualizados via setters threadsafe)
         self._out_gain = 10.0 ** (float(cfg.output_gain_db) / 20.0)
         self._pt_gain = 10.0 ** (float(cfg.passthrough_gain_db) / 20.0)
@@ -233,6 +283,26 @@ class DirectionWorker:
                 out_level=round(self._out_rms, 4),
             )
 
+    def _on_drop(self, kind: str) -> None:
+        """Registra um descarte de fila (audio_q/seg_q) e avisa quem precisa.
+
+        Chamado so no `except queue.Full` — nunca no caminho feliz. Conta,
+        loga o primeiro descarte de cada tipo (uma vez) e emite `overload`
+        throttled (<=1/s) com os contadores acumulados, para a metrica de
+        latencia parar de mentir por omissao (a UI ainda ignora o evento; badge
+        de sobrecarga e fatia propria — ver issue #21).
+        """
+        should_emit, first = self._drops.record(kind, time.perf_counter())
+        if first:
+            what = "frames de audio" if kind == "frame" else "segmentos (frases)"
+            log(f"[{self.cfg.name}] sobrecarga: descartando {what} (fila cheia)")
+        if should_emit:
+            self._emit(
+                "overload",
+                dropped_frames=self._drops.frames,
+                dropped_segments=self._drops.segments,
+            )
+
     def _push_latency(self) -> None:
         def _p(xs: deque[float], p: int) -> int:
             if not xs:
@@ -247,6 +317,8 @@ class DirectionWorker:
             mt_p50=_p(self._lat_mt, 50),
             tts_p50=_p(self._lat_tts, 50),
             samples=len(self._lat_total),
+            dropped_frames=self._drops.frames,
+            dropped_segments=self._drops.segments,
         )
 
     def _capture(self, audio_q: "queue.Queue[np.ndarray]") -> None:
@@ -256,7 +328,7 @@ class DirectionWorker:
             try:
                 audio_q.put_nowait(mono.copy())
             except queue.Full:
-                pass
+                self._on_drop("frame")
 
         def cb_loopback(indata, frames, time_info, status):
             mono = indata.mean(axis=1) if indata.ndim > 1 else indata
@@ -264,7 +336,7 @@ class DirectionWorker:
             try:
                 audio_q.put_nowait(mono.astype(np.float32).copy())
             except queue.Full:
-                pass
+                self._on_drop("frame")
 
         kwargs = dict(
             samplerate=SAMPLE_RATE,
@@ -500,7 +572,7 @@ class DirectionWorker:
                             try:
                                 seg_q.put_nowait(seg)
                             except queue.Full:
-                                pass
+                                self._on_drop("segment")
                         in_speech = False
                         speaking = []
                         silence_run = 0
