@@ -19,12 +19,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import sounddevice as sd
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from laguna_core import DirectionConfig, DirectionWorker, detect_laguna_devices, list_devices
+from laguna_pipeline import SAMPLE_RATE
 
 ROOT = Path(__file__).parent
 STATIC = ROOT / "static"
@@ -85,6 +87,123 @@ async def api_status() -> JSONResponse:
     )
 
 
+def _dev_str(idx: Optional[int]) -> str:
+    return "default" if idx is None else str(idx)
+
+
+def validate_direction_config(dcfg: DirectionConfig) -> list[dict]:
+    """Valida os devices de um DirectionConfig ANTES de criar o worker.
+
+    Retorna lista de erros (cada um `{error_key, args:{device, detail}, msg}`);
+    lista vazia = configuracao valida. E BARATA (so `query_devices` + `check_*`,
+    nunca abre stream nem carrega modelo) para nao regredir a latencia de start.
+
+    Falha do PROPRIO validador (sounddevice sem PortAudio, ambiente atipico,
+    excecao inesperada) degrada para "nao validado" -> retorna `[]` e deixa o
+    fluxo de start seguir. Nunca bloqueia o start por um bug do validador.
+    """
+    try:
+        return _validate_direction_config(dcfg)
+    except Exception:
+        return []
+
+
+def _validate_direction_config(dcfg: DirectionConfig) -> list[dict]:
+    errors: list[dict] = []
+    n_devices = len(sd.query_devices())
+    pa_error = getattr(sd, "PortAudioError", Exception)
+
+    def _in_range(idx: Optional[int]) -> bool:
+        return idx is None or (isinstance(idx, int) and 0 <= idx < n_devices)
+
+    def _max_out_ch(idx: Optional[int]) -> Optional[int]:
+        if idx is None:
+            return None
+        try:
+            return int(sd.query_devices(idx).get("max_output_channels") or 0)
+        except Exception:
+            return None
+
+    def _err(key: str, device: Optional[int], detail: str, msg: str) -> None:
+        errors.append(
+            {"error_key": key, "args": {"device": _dev_str(device), "detail": detail}, "msg": msg}
+        )
+
+    # --- captura ------------------------------------------------------------
+    cap = dcfg.capture_device
+    if not _in_range(cap):
+        _err(
+            "error.start_capture_device_invalid", cap, "indice fora do intervalo",
+            f"dispositivo de captura [{_dev_str(cap)}] nao existe mais",
+        )
+    elif dcfg.use_loopback:
+        # Loopback captura de um endpoint de SAIDA (render): precisa existir e ter
+        # canal de saida. A validacao profunda com WasapiSettings(loopback=...)
+        # varia por versao do sounddevice; se essa versao nao suportar o kwarg,
+        # degrada (nao bloqueia) — o _capture faz o mesmo fallback.
+        out_ch = _max_out_ch(cap)
+        if out_ch is not None and out_ch <= 0:
+            _err(
+                "error.start_capture_device_invalid", cap, "sem canal de saida para loopback",
+                f"dispositivo de captura [{_dev_str(cap)}] nao e uma saida valida para loopback",
+            )
+        else:
+            try:
+                extra = sd.WasapiSettings(loopback=True)
+            except Exception:
+                extra = None
+            if extra is not None:
+                try:
+                    sd.check_input_settings(
+                        device=cap, channels=2, dtype="float32",
+                        samplerate=SAMPLE_RATE, extra_settings=extra,
+                    )
+                except pa_error as e:
+                    _err(
+                        "error.start_capture_device_invalid", cap, str(e),
+                        f"dispositivo de captura [{_dev_str(cap)}] rejeitou o loopback",
+                    )
+    else:
+        # Captura normal: mesmos parametros do _capture (mono, 16 kHz, float32).
+        try:
+            sd.check_input_settings(
+                device=cap, channels=1, dtype="float32", samplerate=SAMPLE_RATE
+            )
+        except pa_error as e:
+            _err(
+                "error.start_capture_device_invalid", cap, str(e),
+                f"dispositivo de captura [{_dev_str(cap)}] invalido",
+            )
+
+    # --- saidas (output_devices + passthrough) ------------------------------
+    out_targets = list(dcfg.output_devices or [])
+    if dcfg.passthrough and dcfg.passthrough_device is not None:
+        out_targets.append(dcfg.passthrough_device)
+    for dev in out_targets:
+        if not _in_range(dev):
+            _err(
+                "error.start_output_device_invalid", dev, "indice fora do intervalo",
+                f"dispositivo de saida [{_dev_str(dev)}] nao existe mais",
+            )
+            continue
+        out_ch = _max_out_ch(dev)
+        if out_ch is not None and out_ch <= 0:
+            _err(
+                "error.start_output_device_invalid", dev, "sem canal de saida",
+                f"dispositivo de saida [{_dev_str(dev)}] nao tem canal de saida",
+            )
+            continue
+        try:
+            sd.check_output_settings(device=dev, channels=1, dtype="float32")
+        except pa_error as e:
+            _err(
+                "error.start_output_device_invalid", dev, str(e),
+                f"dispositivo de saida [{_dev_str(dev)}] invalido",
+            )
+
+    return errors
+
+
 @app.post("/api/start/{direction}")
 async def api_start(direction: str, cfg: dict) -> JSONResponse:
     if direction not in ("falar", "escutar"):
@@ -95,27 +214,43 @@ async def api_start(direction: str, cfg: dict) -> JSONResponse:
             },
             status_code=400,
         )
+    dcfg = DirectionConfig(
+        name=direction,
+        src_lang=cfg["src_lang"],
+        tgt_lang=cfg["tgt_lang"],
+        capture_device=cfg.get("capture_device"),
+        use_loopback=bool(cfg.get("use_loopback", False)),
+        output_devices=[int(x) for x in cfg.get("output_devices", []) if x is not None],
+        model_size=cfg.get("model_size", "small"),
+        device=cfg.get("device", "auto"),
+        compute_type=cfg.get("compute_type"),
+        skip_same_lang=bool(cfg.get("skip_same_lang", True)),
+        passthrough=bool(cfg.get("passthrough", False)),
+        passthrough_device=cfg.get("passthrough_device"),
+        output_gain_db=float(cfg.get("output_gain_db", 0.0)),
+        passthrough_gain_db=float(cfg.get("passthrough_gain_db", 0.0)),
+    )
+
+    # Pre-validacao barata: config invalida -> 400 e NENHUM worker e criado
+    # (nem sequer para o worker que ja estiver rodando nesta direcao).
+    errors = validate_direction_config(dcfg)
+    if errors:
+        first = errors[0]
+        return JSONResponse(
+            {
+                "error_key": first["error_key"],
+                "args": first.get("args", {}),
+                "error": first.get("msg", "configuracao de dispositivo invalida"),
+                "errors": errors,
+            },
+            status_code=400,
+        )
+
     with _lock:
         existing = _workers.get(direction)
         if existing is not None:
             existing.stop()
             _workers.pop(direction, None)
-        dcfg = DirectionConfig(
-            name=direction,
-            src_lang=cfg["src_lang"],
-            tgt_lang=cfg["tgt_lang"],
-            capture_device=cfg.get("capture_device"),
-            use_loopback=bool(cfg.get("use_loopback", False)),
-            output_devices=[int(x) for x in cfg.get("output_devices", []) if x is not None],
-            model_size=cfg.get("model_size", "small"),
-            device=cfg.get("device", "auto"),
-            compute_type=cfg.get("compute_type"),
-            skip_same_lang=bool(cfg.get("skip_same_lang", True)),
-            passthrough=bool(cfg.get("passthrough", False)),
-            passthrough_device=cfg.get("passthrough_device"),
-            output_gain_db=float(cfg.get("output_gain_db", 0.0)),
-            passthrough_gain_db=float(cfg.get("passthrough_gain_db", 0.0)),
-        )
         worker = DirectionWorker(dcfg, on_event=_broadcast)
         _workers[direction] = worker
         worker.start()

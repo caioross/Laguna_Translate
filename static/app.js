@@ -310,8 +310,9 @@ async function startDirection(dir) {
   toggleButtons(panel, true);
   const res = await API.start(dir, cfg);
   if (res.error) {
-    const T = window.LAGUNA_T || ((k) => k);
-    const text = res.error_key ? T(res.error_key) : res.error;
+    // 400 do backend: resolve error_key via i18n e interpola {device}/{detail}
+    // (reusa resolveEvent); sem key, cai no texto cru de res.error.
+    const text = resolveEvent({ key: res.error_key, args: res.args, msg: res.error });
     setStatus(panel, 'error', text);
     toggleButtons(panel, false);
     return;

@@ -43,6 +43,8 @@ window.LAGUNA_I18N = {
     "error.passthrough_query": "passthrough query_devices: {detail}",
     "error.passthrough_generic": "passthrough: {detail}",
     "error.play": "play(dev={dev}): {detail}",
+    "error.start_capture_device_invalid": "Dispositivo de captura [{device}] indisponível — atualize a lista de dispositivos e selecione de novo. ({detail})",
+    "error.start_output_device_invalid": "Dispositivo de saída [{device}] indisponível — atualize a lista de dispositivos e selecione de novo. ({detail})",
     "error.invalid_direction": "direction deve ser falar|escutar",
     "note.worker_stopped_gain_deferred": "worker parado; ganho será aplicado no próximo start",
 
@@ -183,6 +185,8 @@ window.LAGUNA_I18N = {
     "error.passthrough_query": "passthrough query_devices: {detail}",
     "error.passthrough_generic": "passthrough: {detail}",
     "error.play": "play(dev={dev}): {detail}",
+    "error.start_capture_device_invalid": "Capture device [{device}] unavailable — refresh the device list and pick it again. ({detail})",
+    "error.start_output_device_invalid": "Output device [{device}] unavailable — refresh the device list and pick it again. ({detail})",
     "error.invalid_direction": "direction must be falar|escutar",
     "note.worker_stopped_gain_deferred": "worker stopped; gain will be applied on next start",
 
