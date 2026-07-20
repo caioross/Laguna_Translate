@@ -35,6 +35,16 @@ from laguna_pipeline import (
 
 EventCb = Callable[[dict], None]
 
+# Reconexao de captura (issue #12): quando o InputStream cai (device removido,
+# driver reiniciado) ou estagna em silencio (callbacks param sem excecao) SEM
+# que o worker tenha sido parado, tenta reabrir com backoff curto em vez de
+# matar a thread mentindo "Ouvindo". Esgotadas as tentativas, emite erro sticky.
+CAPTURE_MAX_RETRIES = 5       # tentativas antes de declarar captura perdida
+CAPTURE_BACKOFF_S = 0.5       # base do backoff (cresce por tentativa)
+CAPTURE_MAX_BACKOFF_S = 3.0   # teto do backoff entre tentativas
+CAPTURE_STALL_S = 3.0         # sem callbacks por mais que isso = captura morta
+CAPTURE_HEALTHY_S = 5.0       # sessao que durou isso reseta o orcamento de retries
+
 
 @dataclass
 class DirectionConfig:
@@ -125,6 +135,8 @@ class DirectionWorker:
         self._in_rms = 0.0
         self._out_rms = 0.0
         self._last_level_emit = 0.0
+        self._last_cb = 0.0  # ultimo callback de captura (watchdog de estagnacao)
+        self._last_xrun_log = float("-inf")  # throttle de log de xrun
         self._drops = DropCounter()  # descartes de fila sob sobrecarga
         # volume control (linear factors; atualizados via setters threadsafe)
         self._out_gain = 10.0 ** (float(cfg.output_gain_db) / 20.0)
@@ -321,8 +333,32 @@ class DirectionWorker:
             dropped_segments=self._drops.segments,
         )
 
+    def _note_xrun(self, status) -> None:
+        """Loga xruns (overflow/underflow) da captura, throttled a 1/s.
+
+        Chamado so quando o `status` do callback e nao-vazio: o caminho quente
+        (sem glitch) fica intocado, so paga um `if status:` por frame.
+        """
+        now = time.perf_counter()
+        if now - self._last_xrun_log >= 1.0:
+            self._last_xrun_log = now
+            log(f"[{self.cfg.name}] xrun na captura: {status}")
+
+    def _capture_device_label(self) -> str:
+        """Rotulo acionavel do device de captura (nome + indice) para erros."""
+        dev = self.cfg.capture_device
+        if dev is None:
+            return "padrao"
+        try:
+            return f"{sd.query_devices(dev)['name']} (#{dev})"
+        except Exception:
+            return f"#{dev}"
+
     def _capture(self, audio_q: "queue.Queue[np.ndarray]") -> None:
         def cb(indata, frames, time_info, status):
+            self._last_cb = time.perf_counter()
+            if status:
+                self._note_xrun(status)
             mono = indata[:, 0] if indata.ndim > 1 else indata
             self._update_level("in", mono)
             try:
@@ -331,6 +367,9 @@ class DirectionWorker:
                 self._on_drop("frame")
 
         def cb_loopback(indata, frames, time_info, status):
+            self._last_cb = time.perf_counter()
+            if status:
+                self._note_xrun(status)
             mono = indata.mean(axis=1) if indata.ndim > 1 else indata
             self._update_level("in", mono)
             try:
@@ -359,17 +398,74 @@ class DirectionWorker:
                     msg=f"loopback indisponivel: {e}",
                 )
 
-        try:
-            with sd.InputStream(**kwargs):
-                while not self._stop.is_set():
+        # Laco de reconexao (issue #12): reabre o stream em vez de morrer em
+        # silencio. Cobre tanto a excecao do PortAudio quanto a estagnacao muda
+        # (watchdog: callbacks do PortAudio disparam mesmo em silencio, entao
+        # parada > CAPTURE_STALL_S significa captura morta).
+        attempt = 0
+        announce = False  # re-anuncia "Ouvindo" quando o audio volta pos-retry
+        while not self._stop.is_set():
+            try:
+                opened = time.perf_counter()
+                self._last_cb = opened
+                with sd.InputStream(**kwargs):
+                    while not self._stop.is_set():
+                        time.sleep(0.1)
+                        now = time.perf_counter()
+                        if announce and self._last_cb > opened:
+                            announce = False
+                            attempt = 0
+                            self._emit_key("status", "status.listening", msg="Ouvindo")
+                        if now - self._last_cb > CAPTURE_STALL_S:
+                            raise RuntimeError(
+                                f"sem audio ha >{CAPTURE_STALL_S:.0f}s (device sumiu?)"
+                            )
+                return  # saida limpa do `with` so ocorre com _stop setado
+            except Exception as e:
+                if self._stop.is_set():
+                    return
+                label = self._capture_device_label()
+                # sessao que rodou tempo suficiente reseta o orcamento de retries
+                if time.perf_counter() - opened >= CAPTURE_HEALTHY_S:
+                    attempt = 0
+                attempt += 1
+                log(
+                    f"[{self.cfg.name}] captura caiu [{label}] "
+                    f"(tentativa {attempt}/{CAPTURE_MAX_RETRIES}): {e}"
+                )
+                if attempt >= CAPTURE_MAX_RETRIES:
+                    self._emit_key(
+                        "error",
+                        "error.capture_lost",
+                        {"device": label, "detail": str(e)},
+                        msg=f"Captura perdida [{label}] — verifique o dispositivo. ({e})",
+                    )
+                    return
+                announce = True
+                self._emit_key(
+                    "status",
+                    "status.capture_retry",
+                    {
+                        "device": label,
+                        "attempt": attempt,
+                        "max": CAPTURE_MAX_RETRIES,
+                        "detail": str(e),
+                    },
+                    msg=f"Reconectando captura [{label}]... {attempt}/{CAPTURE_MAX_RETRIES} ({e})",
+                )
+                backoff = min(CAPTURE_BACKOFF_S * attempt, CAPTURE_MAX_BACKOFF_S)
+                slept = 0.0
+                while slept < backoff and not self._stop.is_set():
                     time.sleep(0.1)
-        except Exception as e:
-            self._emit_key(
-                "error",
-                "error.input_stream",
-                {"detail": str(e)},
-                msg=f"InputStream: {e}",
-            )
+                    slept += 0.1
+                if self._stop.is_set():
+                    return
+                # re-checa o device alvo antes de reabrir (pode ter voltado/sumido)
+                try:
+                    if self.cfg.capture_device is not None:
+                        sd.query_devices(self.cfg.capture_device)
+                except Exception:
+                    pass  # ainda ausente; a proxima tentativa reavalia
 
     def _passthrough_run(self) -> None:
         """Stream paralelo: roteia audio bruto da captura -> passthrough_device (normalmente fone).
