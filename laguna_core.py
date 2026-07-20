@@ -42,7 +42,7 @@ EventCb = Callable[[dict], None]
 CAPTURE_MAX_RETRIES = 5       # tentativas antes de declarar captura perdida
 CAPTURE_BACKOFF_S = 0.5       # base do backoff (cresce por tentativa)
 CAPTURE_MAX_BACKOFF_S = 3.0   # teto do backoff entre tentativas
-CAPTURE_STALL_S = 3.0         # sem callbacks por mais que isso = captura morta
+CAPTURE_STALL_S = 3.0         # so mic: sem callbacks por mais que isso = captura morta
 CAPTURE_HEALTHY_S = 5.0       # sessao que durou isso reseta o orcamento de retries
 
 
@@ -402,6 +402,15 @@ class DirectionWorker:
         # silencio. Cobre tanto a excecao do PortAudio quanto a estagnacao muda
         # (watchdog: callbacks do PortAudio disparam mesmo em silencio, entao
         # parada > CAPTURE_STALL_S significa captura morta).
+        #
+        # ATENCAO: o watchdog de estagnacao vale SO para captura de mic (input
+        # comum entrega callbacks continuos mesmo em silencio). No WASAPI loopback
+        # o motor de audio do Windows para de entregar buffers quando o endpoint
+        # de render fica ocioso (nada tocando) — ausencia de callback e o estado
+        # NORMAL, nao "device sumido". Aplicar o stall ali derrubaria um stream
+        # saudavel a cada pausa de audio. Para loopback dependemos so do caminho
+        # de excecao (device removido faz o PortAudio levantar), que o laco cobre.
+        watchdog = not self.cfg.use_loopback
         attempt = 0
         announce = False  # re-anuncia "Ouvindo" quando o audio volta pos-retry
         while not self._stop.is_set():
@@ -416,7 +425,7 @@ class DirectionWorker:
                             announce = False
                             attempt = 0
                             self._emit_key("status", "status.listening", msg="Ouvindo")
-                        if now - self._last_cb > CAPTURE_STALL_S:
+                        if watchdog and now - self._last_cb > CAPTURE_STALL_S:
                             raise RuntimeError(
                                 f"sem audio ha >{CAPTURE_STALL_S:.0f}s (device sumiu?)"
                             )
