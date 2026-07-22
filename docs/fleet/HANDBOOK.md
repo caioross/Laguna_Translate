@@ -66,7 +66,7 @@ Reivindicou → `gh issue edit <N> --add-label em-resolucao`. Abriu a PR → rem
 Rode na worktree, com `C:\Python313\python.exe` (receitas exatas na skill `laguna-fleet-ops` §4):
 - **T1 — sempre:** `compileall` no repo inteiro + import-smoke de `fase0_poc`, `laguna_core`, `laguna_server` (não carrega modelos; valida sintaxe e deps).
 - **T2 — tocou pipeline** (`laguna_core.py`, `fase0_poc.py` ou sucessor): `test_offline.py` com um WAV `dry_*.wav` do clone do dono, `--device auto`. Saída audível gerada + latências impressas = verde.
-- **T3 — tocou `static/`:** `node --check` em `app.js`/`i18n.js` (se node existir) + paridade de chaves PT/EN no i18n.
+- **T3 — tocou `static/`:** `node --check` em `app.js`/`i18n.js` (se node existir) + paridade de chaves PT/EN pelo teste versionado `tests_unit/test_i18n_parity.py` (o mesmo do CI) — nunca por script improvisado na hora.
 - Alterou constantes de VAD/latência ou defaults de modelo: anexe número de antes/depois (`bench_fase0.py` ou `test_offline.py`) no corpo da PR — sem número, é §7.1.
 
 Gate vermelho sem correção honesta dentro do escopo = PR em DRAFT explicando o bloqueio. NUNCA enfraqueça o gate, um teste ou o CI para "passar". O CI do GitHub (`.github/workflows/ci.yml`) é um subconjunto do T1 — CI verde NÃO substitui o gate local.

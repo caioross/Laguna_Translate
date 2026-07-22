@@ -59,15 +59,9 @@ Verde = exit 0, latências impressas, `out_gate.wav` gerado (já é gitignorado)
 **T3 — tocou `static/`:**
 ```bash
 command -v node >/dev/null && node --check static/app.js && node --check static/i18n.js && echo JS_OK
-"$PY" - <<'EOF'
-import re
-src = open('static/i18n.js', encoding='utf-8').read()
-pt = set(re.findall(r'^\s{4}(\w+):', src.split('pt:')[1].split('en:')[0], re.M))
-en = set(re.findall(r'^\s{4}(\w+):', src.split('en:')[1], re.M))
-print('I18N_OK' if pt == en else f'I18N_DIVERGE pt-en={sorted(pt-en)} en-pt={sorted(en-pt)}')
-EOF
+"$PY" -m pytest tests_unit/test_i18n_parity.py -q
 ```
-(Se o parse do i18n falhar por mudança de formato, compare manualmente as chaves — o objetivo é paridade PT/EN, não o script.)
+A paridade PT/EN é do teste versionado (`tests_unit/test_i18n_parity.py`), o mesmo que roda no CI: parser robusto e asserts que falham se nenhuma chave for extraída. Não improvise heredoc de regex aqui — a versão antiga extraía 0 chaves e dava falso verde (#34). Se o teste quebrar por mudança de formato do `i18n.js`, conserte o parser do teste, nunca o contorne.
 
 ## §5. PR (Resolvedor)
 
