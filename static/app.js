@@ -1,6 +1,9 @@
 // Laguna Translator — frontend
 const API = {
-  devices: () => fetch('/api/devices').then(r => r.json()),
+  devices: () => fetch('/api/devices').then(r => {
+    if (!r.ok) throw new Error(`/api/devices HTTP ${r.status}`);
+    return r.json();
+  }),
   start: (dir, cfg) => fetch(`/api/start/${dir}`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -16,6 +19,9 @@ const API = {
 
 const state = {
   devices: {inputs: [], outputs: [], loopbacks: [], laguna: {}},
+  // true quando a última chamada a /api/devices falhou — o badge reflete isso
+  // (inclusive ao trocar de idioma, que re-renderiza via updateLagunaBadge()).
+  devicesError: false,
   running: new Set(),
 };
 
@@ -99,8 +105,18 @@ function selectByPreference(sel, preferredTag) {
   return false;
 }
 
+// Carrega os dispositivos. NUNCA propaga exceção: falha de /api/devices vira
+// feedback visível no badge (e devolve false) para não abortar o resto do boot.
 async function loadDevices() {
-  state.devices = await API.devices();
+  try {
+    state.devices = await API.devices();
+  } catch (err) {
+    console.error('[laguna] falha ao carregar dispositivos:', err);
+    state.devicesError = true;
+    updateLagunaBadge();
+    return false;
+  }
+  state.devicesError = false;
   updateLagunaBadge();
   populatePanels();
   // restaura configs salvas DEPOIS de popular (senão os selects ainda não têm opções)
@@ -111,6 +127,7 @@ async function loadDevices() {
   // refresca labels de volume caso tenham sido restaurados de localStorage
   refreshVolumeLabels('falar');
   refreshVolumeLabels('escutar');
+  return true;
 }
 
 // Re-detecta dispositivos sem recarregar a página. Reaproveita loadDevices()
@@ -135,7 +152,10 @@ async function refreshDevices() {
 
   if (btn) { btn.disabled = true; btn.classList.add('is-refreshing'); }
   try {
-    await loadDevices();
+    const ok = await loadDevices();
+    // falhou: o badge já sinalizou o erro e os selects seguem como estavam —
+    // nada a re-aplicar. O finally reabilita o botão para nova tentativa.
+    if (!ok) return;
     // re-aplica a seleção capturada por cima da preferência automática,
     // mas só quando o device continua existindo entre as opções
     for (const dir of ['falar', 'escutar']) {
@@ -168,9 +188,13 @@ function refreshVolumeLabels(dir) {
 
 function updateLagunaBadge() {
   const el = document.getElementById('laguna-badge');
+  if (!el) return;
   const L = state.devices.laguna || {};
   const T = window.LAGUNA_T || ((k) => k);
-  if (L.has_laguna_name) {
+  if (state.devicesError) {
+    el.textContent = T('badge.devices_error');
+    el.className = 'badge err';
+  } else if (L.has_laguna_name) {
     el.textContent = T('badge.laguna_ok');
     el.className = 'badge ok';
   } else if (L.virtual_in != null || L.virtual_out != null) {
@@ -614,6 +638,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindPanel('escutar');
   const refreshBtn = document.getElementById('refresh-devices');
   if (refreshBtn) refreshBtn.addEventListener('click', refreshDevices);
-  await loadDevices();
+  // WS primeiro e sem await: o badge de conexão precisa refletir o estado real
+  // mesmo que a listagem de dispositivos falhe ou demore.
   connectWS();
+  await loadDevices();
 });
