@@ -432,7 +432,8 @@ Laguna_Translate/
 ├── laguna_core.py          # DirectionWorker: pipeline bidirecional, VAD/STT/MT/TTS
 ├── laguna_server.py        # FastAPI + WebSocket (UI web em http://127.0.0.1:7531)
 ├── laguna_app.py           # Launcher com janela nativa (pywebview + WebView2)
-├── fase0_poc.py            # CLI + classes base (STT, ArgosMT, PiperTTS, VAD)
+├── laguna_pipeline.py      # Engines e constantes: STT, ArgosMT, PiperTTS, VAD, detect_device
+├── fase0_poc.py            # CLI de POC (--list-devices); reexporta laguna_pipeline por compat
 ├── fase1_app.py            # Painel PySide6 (legado, substituído pela UI web)
 │
 ├── static/                 # UI web
@@ -494,7 +495,7 @@ Instale os pacotes CUDA via pip e confirme que estão no mesmo Python:
 C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 
-No Windows, `fase0_poc.py::_register_cuda_dlls()` registra os diretórios `bin/` do `nvidia.cublas` e `nvidia.cudnn` **antes** do `import faster_whisper`. Sem isso, o `ctranslate2` não acha as DLLs. Force a GPU no painel avançado (**Device → cuda**) pra ver o erro real, se houver.
+No Windows, `laguna_pipeline.py::_register_cuda_dlls()` registra os diretórios `bin/` do `nvidia.cublas` e `nvidia.cudnn` **antes** do `import faster_whisper`. Sem isso, o `ctranslate2` não acha as DLLs. Force a GPU no painel avançado (**Device → cuda**) pra ver o erro real, se houver.
 </details>
 
 <details>
@@ -515,7 +516,7 @@ O loopback WASAPI exige um device de **saída** (não de entrada). Marque a opç
 <details>
 <summary><b>Os primeiros fonemas são cortados / frases curtas somem</b></summary>
 
-O VAD usa buffer pré-fala de 300ms e segmento mínimo de 400ms. Falas muito curtas ("oi", "ok") podem cair abaixo do mínimo. Fale com um leve "respiro" antes — ou ajuste as constantes em [fase0_poc.py](fase0_poc.py) (`PRE_SPEECH_BUFFER_MS`, `MIN_SPEECH_MS`).
+O VAD usa buffer pré-fala de 300ms e segmento mínimo de 400ms. Falas muito curtas ("oi", "ok") podem cair abaixo do mínimo. Fale com um leve "respiro" antes — ou ajuste as constantes em [laguna_pipeline.py](laguna_pipeline.py) (`PRE_SPEECH_BUFFER_MS`, `MIN_SPEECH_MS`).
 </details>
 
 <details>
@@ -577,19 +578,19 @@ Argos tem **dois** pacotes portugueses:
 - `pt` → Europeu ("estás", "equipa", "juntar-se")
 - `pb` → Brasileiro ("está", "time", "se juntar")
 
-O código mapeia `pt → pb` automaticamente via `ARGOS_CODE_MAP` em [fase0_poc.py](fase0_poc.py). **Whisper STT** continua usando `pt` (o modelo não distingue variantes).
+O código mapeia `pt → pb` automaticamente via `ARGOS_CODE_MAP` em [laguna_pipeline.py](laguna_pipeline.py). **Whisper STT** continua usando `pt` (o modelo não distingue variantes).
 </details>
 
 <details>
 <summary><b>DLLs CUDA no Windows</b></summary>
 
-`fase0_poc.py::_register_cuda_dlls()` procura `nvidia.cublas` e `nvidia.cudnn` instalados via pip e registra os diretórios `bin/` antes do `import faster_whisper`. Sem isso, `ctranslate2` não encontra as DLLs no Windows.
+`laguna_pipeline.py::_register_cuda_dlls()` procura `nvidia.cublas` e `nvidia.cudnn` instalados via pip e registra os diretórios `bin/` antes do `import faster_whisper`. Sem isso, `ctranslate2` não encontra as DLLs no Windows.
 </details>
 
 <details>
 <summary><b>Pipeline de VAD → segmentação</b></summary>
 
-`WebRTC VAD` com agressividade 2, frames de 30ms. Buffer pré-fala de 300ms, hangover de silêncio de 600ms, segmento mínimo 400ms, máximo 12s (force flush). Implementação em [laguna_core.py](laguna_core.py) e [fase0_poc.py](fase0_poc.py).
+`WebRTC VAD` com agressividade 2, frames de 30ms. Buffer pré-fala de 300ms, hangover de silêncio de 600ms, segmento mínimo 400ms, máximo 12s (force flush). Implementação em [laguna_core.py](laguna_core.py) e [laguna_pipeline.py](laguna_pipeline.py).
 </details>
 
 ---
@@ -939,7 +940,7 @@ WASAPI loopback needs an **output** device (not an input). Check *"Loopback capt
 <details>
 <summary><b>First phonemes cut off / short phrases vanish</b></summary>
 
-The VAD uses a 300ms pre-speech buffer and a 400ms minimum segment. Very short utterances ("hi", "ok") can fall below the minimum. Tune the constants in [fase0_poc.py](fase0_poc.py) (`PRE_SPEECH_BUFFER_MS`, `MIN_SPEECH_MS`).
+The VAD uses a 300ms pre-speech buffer and a 400ms minimum segment. Very short utterances ("hi", "ok") can fall below the minimum. Tune the constants in [laguna_pipeline.py](laguna_pipeline.py) (`PRE_SPEECH_BUFFER_MS`, `MIN_SPEECH_MS`).
 </details>
 
 ---
@@ -976,9 +977,9 @@ The VAD uses a 300ms pre-speech buffer and a 400ms minimum segment. Very short u
 <a id="en-notes"></a>
 ## 🛠 Technical notes
 
-- **Argos `pt` vs `pb`:** Argos has two Portuguese packages — `pt` (European) and `pb` (Brazilian). The code maps `pt → pb` via `ARGOS_CODE_MAP` in [fase0_poc.py](fase0_poc.py). Whisper STT keeps using `pt` (the model doesn't distinguish variants).
+- **Argos `pt` vs `pb`:** Argos has two Portuguese packages — `pt` (European) and `pb` (Brazilian). The code maps `pt → pb` via `ARGOS_CODE_MAP` in [laguna_pipeline.py](laguna_pipeline.py). Whisper STT keeps using `pt` (the model doesn't distinguish variants).
 - **CUDA DLLs on Windows:** `_register_cuda_dlls()` finds pip-installed `nvidia.cublas` / `nvidia.cudnn` and registers their `bin/` dirs before importing `faster_whisper`.
-- **VAD → segmentation:** WebRTC VAD at aggressiveness 2, 30ms frames. 300ms pre-speech buffer, 600ms silence hangover, 400ms min segment, 12s max (force flush). See [laguna_core.py](laguna_core.py) and [fase0_poc.py](fase0_poc.py).
+- **VAD → segmentation:** WebRTC VAD at aggressiveness 2, 30ms frames. 300ms pre-speech buffer, 600ms silence hangover, 400ms min segment, 12s max (force flush). See [laguna_core.py](laguna_core.py) and [laguna_pipeline.py](laguna_pipeline.py).
 
 ---
 
