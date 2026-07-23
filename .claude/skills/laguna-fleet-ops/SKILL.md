@@ -104,10 +104,11 @@ NUNCA remova worktree de branch não-mergeada com commits não enviados; NUNCA t
 ## §9. Gotchas do Laguna
 
 - Repo é `Laguna_Translate` (underscore); a pasta local tem espaço — quote tudo, sempre.
-- `pt` vs `pb`: Argos usa `pb` (brasileiro) via `ARGOS_CODE_MAP` em `fase0_poc.py`; Whisper usa `pt`. Não "conserte" isso.
-- CUDA no Windows: `_register_cuda_dlls()` roda no import de `fase0_poc` ANTES de `faster_whisper` — não reordene imports do topo.
-- `laguna_core.py` importa de `fase0_poc.py` por design LEGADO (dívida conhecida, epic aberta) — não adicione import novo de `fase0_poc` em código novo.
+- Engines, constantes e helpers do pipeline moram em `laguna_pipeline.py`. `fase0_poc.py` é CLI pura (`--list-devices`, `segmenter_worker`) que só reexporta esses símbolos por compat legada — procure o código real sempre em `laguna_pipeline.py`.
+- `pt` vs `pb`: Argos usa `pb` (brasileiro) via `ARGOS_CODE_MAP` em `laguna_pipeline.py`; Whisper usa `pt`. Não "conserte" isso.
+- CUDA no Windows: `_register_cuda_dlls()` (em `laguna_pipeline.py`) roda na carga do módulo ANTES de `faster_whisper` — não reordene os imports do topo de `laguna_pipeline.py`.
+- Desacoplamento `laguna_core` → `fase0_poc` concluído (#6/#20): `laguna_core.py` importa 100% de `laguna_pipeline.py`. Não reintroduza import de `fase0_poc` em código novo.
 - Modelos: 1º uso numa worktree baixa para `models_cache/` local dela (HF pode rate-limitar). Alternativa: exporte `HF_HOME` apontando para o cache do clone se o download travar.
-- VAD: constantes (`PRE_SPEech_BUFFER_MS`… ver `fase0_poc.py`) afetam corte de fonemas — mudanças exigem número antes/depois (§6/§7).
+- VAD: constantes (`PRE_SPEECH_BUFFER_MS`, `MIN_SPEECH_MS`… ver `laguna_pipeline.py`) afetam corte de fonemas — mudanças exigem número antes/depois (§6/§7).
 - `fase1_app.py` (PySide6) é legado morto; não invista rodadas nele.
 - Não deixe `laguna_server.py` rodando ao fim da rodada (porta 7531).
