@@ -25,7 +25,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from laguna_core import DirectionConfig, DirectionWorker, detect_laguna_devices, list_devices
+from laguna_core import DirectionConfig, DirectionWorker
+from laguna_devices import detect_laguna_devices, list_devices
 from laguna_pipeline import SAMPLE_RATE
 
 ROOT = Path(__file__).parent
