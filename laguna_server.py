@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from laguna_core import DirectionConfig, DirectionWorker
-from laguna_devices import detect_laguna_devices, list_devices
+from laguna_devices import detect_laguna_devices, list_devices, reinit_portaudio
 from laguna_pipeline import SAMPLE_RATE
 
 ROOT = Path(__file__).parent
@@ -73,9 +73,32 @@ async def _broadcast_async(payload: str) -> None:
 
 
 @app.get("/api/devices")
-async def api_devices() -> JSONResponse:
+async def api_devices(refresh: int = 0) -> JSONResponse:
+    """Lista os dispositivos. Com `?refresh=1`, re-detecta hardware novo.
+
+    Sem o parametro a resposta e a barata de sempre (usada no boot da UI): so
+    enumera o cache do PortAudio. Com `refresh=1` (o botao 🔄) o PortAudio e
+    re-inicializado antes de enumerar — caro (centenas de ms no WASAPI) e por
+    isso nao entra em todo carregamento de pagina.
+
+    Guarda: com QUALQUER worker vivo o re-init e pulado. `_terminate()` derruba
+    os streams abertos e reatribui os indices dos devices, e um worker guarda
+    `capture_device`/`output_devices` como int — ele passaria a apontar para
+    outro hardware silenciosamente. Nesse caso a lista volta igual e o campo
+    `refresh` explica o porque para a UI.
+    """
+    refresh_info = {"requested": bool(refresh), "applied": False, "reason": None}
+    if refresh:
+        with _lock:
+            if _workers:
+                refresh_info["reason"] = "workers_running"
+            elif reinit_portaudio():
+                refresh_info["applied"] = True
+            else:
+                refresh_info["reason"] = "unsupported"
     data = list_devices()
     data["laguna"] = detect_laguna_devices()
+    data["refresh"] = refresh_info
     return JSONResponse(data)
 
 

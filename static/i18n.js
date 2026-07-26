@@ -14,7 +14,9 @@ window.LAGUNA_I18N = {
     "conn.offline": "offline",
     "tip.lang_toggle": "Alternar idioma do painel (PT ↔ EN).",
     "tip.theme_toggle": "Alternar tema claro/escuro (atalho: Shift+T).",
-    "tip.refresh_devices": "Re-detecta os dispositivos de áudio sem recarregar a página. Use ao conectar um fone ou renomear o CABLE depois de abrir o painel.",
+    "tip.refresh_devices": "Re-detecta os dispositivos de áudio sem recarregar a página. Use ao conectar um fone ou renomear o CABLE depois de abrir o painel. Com alguma direção rodando, pare-a antes: a re-detecção mexe nos dispositivos em uso.",
+    "devices.refresh_blocked_running": "⚠ Pare as direções para re-detectar dispositivos (a lista acima não mudou)",
+    "devices.refresh_unsupported": "⚠ Re-detecção indisponível nesta versão do sounddevice — reinicie o Laguna para ver hardware novo",
 
     // FALAR
     "falar.title": "FALAR",
@@ -159,7 +161,9 @@ window.LAGUNA_I18N = {
     "conn.offline": "offline",
     "tip.lang_toggle": "Toggle UI language (PT ↔ EN).",
     "tip.theme_toggle": "Toggle light/dark theme (shortcut: Shift+T).",
-    "tip.refresh_devices": "Re-detect audio devices without reloading the page. Use it after plugging in headphones or renaming the CABLE once the panel is already open.",
+    "tip.refresh_devices": "Re-detect audio devices without reloading the page. Use it after plugging in headphones or renaming the CABLE once the panel is already open. Stop any running direction first: re-detection touches the devices in use.",
+    "devices.refresh_blocked_running": "⚠ Stop the running directions to re-detect devices (the list above did not change)",
+    "devices.refresh_unsupported": "⚠ Re-detection unavailable in this sounddevice version — restart Laguna to see new hardware",
 
     // FALAR
     "falar.title": "SPEAK",
