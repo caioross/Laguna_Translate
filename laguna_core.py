@@ -19,15 +19,11 @@ import sounddevice as sd
 
 from laguna_pipeline import (
     ArgosMT,
-    MAX_SEGMENT_MS,
-    MIN_SPEECH_MS,
-    PRE_SPEECH_BUFFER_MS,
     PiperTTS,
     SAMPLE_RATE,
-    SILENCE_HANGOVER_MS,
     STT,
-    VAD_FRAME_MS,
     VAD_FRAME_SAMPLES,
+    VADSegmenter,
     WebRTCVADGate,
     detect_device,
     log,
@@ -818,15 +814,13 @@ class DirectionWorker:
         seg_q: "queue.Queue[np.ndarray]",
         vad: WebRTCVADGate,
     ) -> None:
-        pre_max = PRE_SPEECH_BUFFER_MS // VAD_FRAME_MS
-        silence_max = SILENCE_HANGOVER_MS // VAD_FRAME_MS
-        min_speech = MIN_SPEECH_MS // VAD_FRAME_MS
-        max_frames = MAX_SEGMENT_MS // VAD_FRAME_MS
-
-        pre_buf: deque[np.ndarray] = deque(maxlen=pre_max)
-        speaking: list[np.ndarray] = []
-        silence_run = 0
-        in_speech = False
+        # A politica de segmentacao (pre-buffer / hangover / min-max) vive em
+        # VADSegmenter (laguna_pipeline), a mesma classe coberta por
+        # tests_unit/test_vad_segmenter.py e usada pela CLI (fase0_poc). Aqui a
+        # thread cuida so de queues, do fatiamento em frames de VAD_FRAME_SAMPLES
+        # e do `leftover` — a captura entrega blocos de tamanho arbitrario e
+        # `VADSegmenter.push` assume frame ja alinhado (issue #44).
+        segmenter = VADSegmenter()
         leftover = np.zeros(0, dtype=np.float32)
 
         while not self._stop.is_set():
@@ -839,28 +833,12 @@ class DirectionWorker:
             while i + VAD_FRAME_SAMPLES <= len(buf):
                 frame = buf[i : i + VAD_FRAME_SAMPLES]
                 i += VAD_FRAME_SAMPLES
-                is_speech = vad.is_speech(frame)
-                if not in_speech:
-                    pre_buf.append(frame)
-                    if is_speech:
-                        in_speech = True
-                        speaking = list(pre_buf)
-                        pre_buf.clear()
-                        silence_run = 0
-                else:
-                    speaking.append(frame)
-                    silence_run = 0 if is_speech else silence_run + 1
-                    force_flush = len(speaking) >= max_frames
-                    if silence_run >= silence_max or force_flush:
-                        if len(speaking) >= min_speech:
-                            seg = np.concatenate(speaking)
-                            try:
-                                seg_q.put_nowait(seg)
-                            except queue.Full:
-                                self._on_drop("segment")
-                        in_speech = False
-                        speaking = []
-                        silence_run = 0
+                seg = segmenter.push(frame, vad.is_speech(frame))
+                if seg is not None:
+                    try:
+                        seg_q.put_nowait(seg)
+                    except queue.Full:
+                        self._on_drop("segment")
             leftover = buf[i:] if i < len(buf) else np.zeros(0, dtype=np.float32)
 
     def _open_sinks(self, samplerate: int) -> None:
