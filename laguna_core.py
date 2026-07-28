@@ -56,6 +56,161 @@ CAPTURE_MAX_BACKOFF_S = 3.0   # teto do backoff entre tentativas
 CAPTURE_STALL_S = 3.0         # so mic: sem callbacks por mais que isso = captura morta
 CAPTURE_HEALTHY_S = 5.0       # sessao que durou isso reseta o orcamento de retries
 
+# Reproducao da traducao (issue #38): um _OutputSink por device de saida, com
+# stream proprio (aberto uma vez e reusado) e thread propria, de modo que as
+# saidas toquem em PARALELO. O laco de traducao ficava bloqueado N x duracao-da-
+# frase (fone so comecava quando o CABLE terminava) porque `sd.play(blocking=
+# True)` roda em serie por device. `sd.play()` tambem nao serve para paralelizar
+# com threads: ele opera sobre um stream global do modulo sounddevice — duas
+# chamadas concorrentes se cancelam — e reabre o stream a cada frase (dezenas de
+# ms no WASAPI, em cima do alvo de p50 ~450ms).
+OUT_SINK_JOIN_S = 2.0         # espera maxima pela thread do sink ao fechar
+OUT_SINK_WAIT_MARGIN_S = 2.0  # folga sobre a duracao da frase ao esperar o sink
+OUT_SINK_POLL_S = 0.2         # granularidade do stop na thread do sink
+
+
+def _open_output_stream(device: int, samplerate: int):
+    """Abre e inicia o OutputStream mono de um device de saida.
+
+    Isolado em funcao para que os testes injetem um stream falso (`_OutputSink`
+    recebe `open_stream`) sem tocar PortAudio. Mono/float32 espelha o que o
+    `sd.play()` anterior fazia com o PCM 1-D do Piper.
+    """
+    stream = sd.OutputStream(
+        device=device,
+        samplerate=samplerate,
+        channels=1,
+        dtype="float32",
+    )
+    stream.start()
+    return stream
+
+
+class _OutputSink:
+    """Reproduz frases traduzidas num device de saida, em thread propria.
+
+    `submit()` nunca bloqueia: enfileira a frase (fila de 1) e volta na hora, de
+    modo que o chamador alimente todos os devices praticamente ao mesmo tempo.
+    `wait()` espera a frase terminar — o laco de traducao espera todos os sinks
+    uma vez so, ficando bloqueado ~1 frase, nao N.
+
+    Falha de device e local: a excecao fecha so este stream (a proxima frase
+    reabre) e vai para `on_error(device, exc)`; os outros sinks seguem tocando.
+    """
+
+    def __init__(
+        self,
+        device: int,
+        samplerate: int,
+        on_error: Callable[[int, Exception], None],
+        open_stream: Optional[Callable[[int, int], object]] = None,
+    ) -> None:
+        self.device = int(device)
+        self.samplerate = int(samplerate)
+        self._on_error = on_error
+        self._open_stream = open_stream or _open_output_stream
+        self._q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1)
+        self._done = threading.Event()
+        self._done.set()  # ocioso ate a 1a frase
+        self._stop = threading.Event()
+        self._lock = threading.Lock()  # protege self._stream entre as threads
+        self._stream: Optional[object] = None
+        self._logou_descarte = False  # log de frase descartada: so o 1o
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name=f"laguna-out-{self.device}"
+        )
+        self._thread.start()
+
+    def submit(self, pcm: np.ndarray) -> None:
+        """Enfileira uma frase e retorna imediatamente."""
+        self._done.clear()
+        try:
+            self._q.put_nowait(pcm)
+        except queue.Full:
+            # Sink ainda ocupado com a frase anterior (device lento/travado):
+            # descarta so nele, sem segurar os demais. Loga uma vez para o
+            # descarte nao ser invisivel — contabilizar no DropCounter/`overload`
+            # exige um terceiro `kind` e muda o payload do evento, entao fica
+            # como fatia propria (issue #38).
+            if not self._logou_descarte:
+                self._logou_descarte = True
+                log(f"saida dev={self.device}: device atrasado, frase descartada")
+            self._done.set()
+
+    def wait(self, timeout: float) -> bool:
+        """Espera a frase atual terminar. False = estourou o timeout."""
+        return self._done.wait(timeout)
+
+    def close(self) -> None:
+        """Aborta o que estiver tocando, encerra a thread e fecha o stream."""
+        self._stop.set()
+        with self._lock:
+            stream = self._stream
+        if stream is not None:
+            try:
+                stream.abort()  # desbloqueia um write() em andamento
+            except Exception:
+                pass
+        self._thread.join(timeout=OUT_SINK_JOIN_S)
+        self._close_stream()
+
+    # --- interno (thread do sink) -------------------------------------------
+    def _run(self) -> None:
+        # Abre ja no start: a 1a frase nao paga a abertura e um device invalido
+        # vira erro antes de alguem falar.
+        try:
+            self._ensure_stream()
+        except Exception as e:
+            self._close_stream()
+            self._report(e)
+
+        while not self._stop.is_set():
+            try:
+                pcm = self._q.get(timeout=OUT_SINK_POLL_S)
+            except queue.Empty:
+                continue
+            try:
+                if not self._stop.is_set():
+                    self._ensure_stream().write(np.ascontiguousarray(pcm, dtype=np.float32))
+            except Exception as e:
+                self._close_stream()  # forca reabertura na proxima frase
+                self._report(e)
+            finally:
+                self._done.set()
+
+    def _report(self, exc: Exception) -> None:
+        """Emite falha de device — exceto quando a falha E o proprio shutdown.
+
+        `close()` chama `stream.abort()` justamente para desbloquear um `write()`
+        em andamento, e o PortAudio faz esse write falhar. Sem este guarda, todo
+        Stop (ou troca de config, que faz `laguna_server` parar o worker antigo)
+        com uma frase tocando acendia `error.play` na UI — e `static/app.js`
+        trata erro como terminal, deixando o painel travado. Parar nao e erro.
+        """
+        if self._stop.is_set():
+            return
+        self._on_error(self.device, exc)
+
+    def _ensure_stream(self):
+        with self._lock:
+            if self._stream is None:
+                self._stream = self._open_stream(self.device, self.samplerate)
+            return self._stream
+
+    def _close_stream(self) -> None:
+        with self._lock:
+            stream, self._stream = self._stream, None
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
 
 @dataclass
 class DirectionConfig:
@@ -149,6 +304,7 @@ class DirectionWorker:
         self._last_cb = 0.0  # ultimo callback de captura (watchdog de estagnacao)
         self._last_xrun_log = float("-inf")  # throttle de log de xrun
         self._drops = DropCounter()  # descartes de fila sob sobrecarga
+        self._sinks: list[_OutputSink] = []  # saidas da traducao (abertas em _run)
         # volume control (linear factors; atualizados via setters threadsafe)
         self._out_gain = 10.0 ** (float(cfg.output_gain_db) / 20.0)
         self._pt_gain = 10.0 ** (float(cfg.passthrough_gain_db) / 20.0)
@@ -170,6 +326,9 @@ class DirectionWorker:
 
     def stop(self) -> None:
         self._stop.set()
+        # Libera os devices de saida na hora: o servidor recria o worker logo em
+        # seguida ao trocar de config, e o stream fica aberto mesmo em silencio.
+        self._close_sinks()
         for t in self._threads:
             t.join(timeout=2)
 
@@ -217,6 +376,8 @@ class DirectionWorker:
             _ = stt.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))
             _ = mt.translate("olá" if self.cfg.src_lang == "pt" else "hello")
             _ = tts.synthesize("warm up")
+
+            self._open_sinks(tts.sample_rate)
 
             vad = WebRTCVADGate(aggressiveness=2)
             audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=400)
@@ -279,6 +440,10 @@ class DirectionWorker:
                 self._play(audio_out, tts.sample_rate)
         except Exception as e:
             self._emit("error", msg=f"{type(e).__name__}: {e}")
+        finally:
+            # Fecha streams de saida e junta as threads dos sinks: parar/reiniciar
+            # a direcao varias vezes nao pode vazar device (issue #38).
+            self._close_sinks()
 
     def _update_level(self, kind: str, arr: np.ndarray) -> None:
         """Atualiza medidor de nivel (in/out) com EMA + emite throttled (10Hz)."""
@@ -676,21 +841,46 @@ class DirectionWorker:
                         self._on_drop("segment")
             leftover = buf[i:] if i < len(buf) else np.zeros(0, dtype=np.float32)
 
+    def _open_sinks(self, samplerate: int) -> None:
+        """Cria um sink por device de saida (sample rate fixo = o do Piper)."""
+        if self._stop.is_set():
+            # Stop chegou durante o warmup (carga de modelo estoura o join de 2s
+            # do stop()): nao adianta abrir device para fechar no finally.
+            return
+        self._sinks = [
+            _OutputSink(dev, samplerate, self._on_sink_error)
+            for dev in self.cfg.output_devices
+        ]
+
+    def _close_sinks(self) -> None:
+        sinks, self._sinks = self._sinks, []
+        for sink in sinks:
+            sink.close()
+
+    def _on_sink_error(self, dev: int, exc: Exception) -> None:
+        self._emit_key(
+            "error",
+            "error.play",
+            {"dev": dev, "detail": str(exc)},
+            msg=f"play(dev={dev}): {exc}",
+        )
+
     def _play(self, pcm: np.ndarray, sr: int) -> None:
-        if len(pcm) == 0 or not self.cfg.output_devices:
+        # Lista fixada numa local: um _close_sinks() concorrente (stop) nao pode
+        # fazer o laco de espera enxergar um conjunto diferente do que submeteu.
+        sinks = self._sinks
+        if len(pcm) == 0 or not sinks or self._stop.is_set():
             return
         gain = self._out_gain
         if gain != 1.0:
             pcm = np.clip(pcm.astype(np.float32, copy=False) * gain, -1.0, 1.0)
-        self._update_level("out", pcm)
-        for dev in self.cfg.output_devices:
-            try:
-                sd.play(pcm, samplerate=sr, device=dev, blocking=True)
-            except Exception as e:
-                self._emit_key(
-                    "error",
-                    "error.play",
-                    {"dev": dev, "detail": str(e)},
-                    msg=f"play(dev={dev}): {e}",
-                )
+        self._update_level("out", pcm)  # medidor: 1x por frase, nao 1x por device
+        for sink in sinks:
+            sink.submit(pcm)
+        # As saidas tocam em paralelo: espera-se uma frase (a mais lenta), nao N.
+        # O deadline unico evita que um device travado multiplique a espera; sem
+        # ele o laco poderia ficar parado N x timeout.
+        deadline = time.perf_counter() + len(pcm) / float(sr) + OUT_SINK_WAIT_MARGIN_S
+        for sink in sinks:
+            sink.wait(max(0.0, deadline - time.perf_counter()))
 
