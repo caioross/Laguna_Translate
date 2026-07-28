@@ -119,6 +119,7 @@ class _OutputSink:
         self._stop = threading.Event()
         self._lock = threading.Lock()  # protege self._stream entre as threads
         self._stream: Optional[object] = None
+        self._logou_descarte = False  # log de frase descartada: so o 1o
         self._thread = threading.Thread(
             target=self._run, daemon=True, name=f"laguna-out-{self.device}"
         )
@@ -131,7 +132,13 @@ class _OutputSink:
             self._q.put_nowait(pcm)
         except queue.Full:
             # Sink ainda ocupado com a frase anterior (device lento/travado):
-            # descarta so nele, sem segurar os demais.
+            # descarta so nele, sem segurar os demais. Loga uma vez para o
+            # descarte nao ser invisivel — contabilizar no DropCounter/`overload`
+            # exige um terceiro `kind` e muda o payload do evento, entao fica
+            # como fatia propria (issue #38).
+            if not self._logou_descarte:
+                self._logou_descarte = True
+                log(f"saida dev={self.device}: device atrasado, frase descartada")
             self._done.set()
 
     def wait(self, timeout: float) -> bool:
@@ -159,7 +166,7 @@ class _OutputSink:
             self._ensure_stream()
         except Exception as e:
             self._close_stream()
-            self._on_error(self.device, e)
+            self._report(e)
 
         while not self._stop.is_set():
             try:
@@ -171,9 +178,22 @@ class _OutputSink:
                     self._ensure_stream().write(np.ascontiguousarray(pcm, dtype=np.float32))
             except Exception as e:
                 self._close_stream()  # forca reabertura na proxima frase
-                self._on_error(self.device, e)
+                self._report(e)
             finally:
                 self._done.set()
+
+    def _report(self, exc: Exception) -> None:
+        """Emite falha de device — exceto quando a falha E o proprio shutdown.
+
+        `close()` chama `stream.abort()` justamente para desbloquear um `write()`
+        em andamento, e o PortAudio faz esse write falhar. Sem este guarda, todo
+        Stop (ou troca de config, que faz `laguna_server` parar o worker antigo)
+        com uma frase tocando acendia `error.play` na UI — e `static/app.js`
+        trata erro como terminal, deixando o painel travado. Parar nao e erro.
+        """
+        if self._stop.is_set():
+            return
+        self._on_error(self.device, exc)
 
     def _ensure_stream(self):
         with self._lock:
@@ -845,6 +865,10 @@ class DirectionWorker:
 
     def _open_sinks(self, samplerate: int) -> None:
         """Cria um sink por device de saida (sample rate fixo = o do Piper)."""
+        if self._stop.is_set():
+            # Stop chegou durante o warmup (carga de modelo estoura o join de 2s
+            # do stop()): nao adianta abrir device para fechar no finally.
+            return
         self._sinks = [
             _OutputSink(dev, samplerate, self._on_sink_error)
             for dev in self.cfg.output_devices
@@ -864,18 +888,21 @@ class DirectionWorker:
         )
 
     def _play(self, pcm: np.ndarray, sr: int) -> None:
-        if len(pcm) == 0 or not self._sinks or self._stop.is_set():
+        # Lista fixada numa local: um _close_sinks() concorrente (stop) nao pode
+        # fazer o laco de espera enxergar um conjunto diferente do que submeteu.
+        sinks = self._sinks
+        if len(pcm) == 0 or not sinks or self._stop.is_set():
             return
         gain = self._out_gain
         if gain != 1.0:
             pcm = np.clip(pcm.astype(np.float32, copy=False) * gain, -1.0, 1.0)
         self._update_level("out", pcm)  # medidor: 1x por frase, nao 1x por device
-        for sink in self._sinks:
+        for sink in sinks:
             sink.submit(pcm)
         # As saidas tocam em paralelo: espera-se uma frase (a mais lenta), nao N.
         # O deadline unico evita que um device travado multiplique a espera; sem
         # ele o laco poderia ficar parado N x timeout.
         deadline = time.perf_counter() + len(pcm) / float(sr) + OUT_SINK_WAIT_MARGIN_S
-        for sink in self._sinks:
+        for sink in sinks:
             sink.wait(max(0.0, deadline - time.perf_counter()))
 

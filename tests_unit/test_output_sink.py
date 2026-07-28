@@ -169,6 +169,68 @@ def test_close_encerra_thread_e_fecha_stream():
     sink.close()  # idempotente: fechar de novo nao levanta
 
 
+class _AbortaLevantando(FakeStream):
+    """Stream que so sai do `write()` quando abortado — e ai levanta.
+
+    E o que o PortAudio faz: `close()` chama `abort()` para desbloquear o write
+    em andamento, e o write abortado retorna erro. O `FakeStream` base tem
+    `abort()` no-op e `write()` que nunca levanta, entao era cego para isto.
+    """
+
+    def __init__(self, device: int, samplerate: int, dur: float = FRASE_S) -> None:
+        super().__init__(device, samplerate, dur)
+        self.no_write = threading.Event()
+        self._abortado = threading.Event()
+
+    def write(self, data) -> None:
+        self.no_write.set()
+        self._abortado.wait(2.0)
+        raise RuntimeError("Error writing to stream: stream aborted")
+
+    def abort(self) -> None:
+        self.aborted = True
+        self._abortado.set()
+
+
+def test_parar_com_frase_tocando_nao_vira_erro_de_device():
+    """Stop nao e falha: `error.play` num Stop normal travava a UI (app.js trata
+    erro como terminal) — e trocar de config faz o servidor parar o worker."""
+    errors, criados = [], []
+
+    def _open(device: int, samplerate: int):
+        st = _AbortaLevantando(device, samplerate)
+        criados.append(st)
+        return st
+
+    sink = _OutputSink(11, SR, lambda dev, exc: errors.append((dev, exc)), _open)
+    sink.submit(PCM)
+    assert criados[0].no_write.wait(2.0)  # thread esta DENTRO do write
+    sink.close()
+
+    assert criados[0].aborted  # o abort e o que desbloqueia o write
+    assert not sink._thread.is_alive()  # e a thread realmente encerrou
+    assert errors == []  # o write abortado pelo stop NAO vira error.play
+
+
+def test_falha_de_device_fora_do_stop_continua_reportada():
+    """Contraprova do teste acima: o guarda de shutdown nao pode calar erro real."""
+    errors: list = []
+
+    class _SempreFalha(FakeStream):
+        def write(self, data):
+            raise RuntimeError("device sumiu no meio da frase")
+
+    sink = _OutputSink(
+        12, SR, lambda dev, exc: errors.append((dev, exc)), lambda d, sr: _SempreFalha(d, sr)
+    )
+    try:
+        sink.submit(PCM)
+        assert sink.wait(2.0)
+        assert [dev for dev, _ in errors] == [12]  # sem stop: erro chega a UI
+    finally:
+        sink.close()
+
+
 def test_play_do_worker_nao_cresce_com_o_numero_de_saidas():
     store, errors = {}, []
     cfg = DirectionConfig(name="t", src_lang="pt", tgt_lang="en")
