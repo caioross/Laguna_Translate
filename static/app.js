@@ -4,18 +4,43 @@ const API = {
     if (!r.ok) throw new Error(`/api/devices HTTP ${r.status}`);
     return r.json();
   }),
-  start: (dir, cfg) => fetch(`/api/start/${dir}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(cfg)
-  }).then(r => r.json()),
-  stop: (dir) => fetch(`/api/stop/${dir}`, {method: 'POST'}).then(r => r.json()),
-  gain: (dir, body) => fetch(`/api/gain/${dir}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  }).then(r => r.json()).catch(() => null),
+  start: (dir, cfg) => postJSON(`/api/start/${dir}`, cfg),
+  stop: (dir) => postJSON(`/api/stop/${dir}`),
+  gain: (dir, body) => postJSON(`/api/gain/${dir}`, body),
 };
+
+// Erro sintetico no MESMO formato do 400 do backend, para resolveEvent() render.
+function requestFailed(detail) {
+  return {
+    error_key: 'error.request_failed',
+    args: {detail},
+    error: `falha de requisicao: ${detail}`,
+  };
+}
+
+// POST JSON que NUNCA lanca: devolve {ok, data}. Cobre os tres casos que faltavam
+// tratamento (#50): servidor fora do ar (fetch rejeita), HTTP nao-OK sem contrato
+// de erro (ex.: 500 {"detail": ...}) e corpo nao-JSON. Quando o backend devolve o
+// 400 previsto, `data` passa intacto com error_key/args/error.
+async function postJSON(url, body) {
+  let r;
+  try {
+    r = await fetch(url, body === undefined ? {method: 'POST'} : {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return {ok: false, data: requestFailed(err && err.message ? err.message : String(err))};
+  }
+  const data = await r.json().catch(() => null);
+  if (r.ok) return {ok: true, data: data || {}};
+  if (data && (data.error_key || data.error)) return {ok: false, data};
+  const detail = data && typeof data.detail === 'string'
+    ? `HTTP ${r.status}: ${data.detail}`
+    : `HTTP ${r.status}`;
+  return {ok: false, data: requestFailed(detail)};
+}
 
 const state = {
   devices: {inputs: [], outputs: [], loopbacks: [], laguna: {}},
@@ -332,11 +357,13 @@ async function startDirection(dir) {
   if (!cfg) return;
   setStatusKey(panel, 'loading', 'status.loading');
   toggleButtons(panel, true);
-  const res = await API.start(dir, cfg);
-  if (res.error) {
+  const {ok, data} = await API.start(dir, cfg);
+  if (!ok || data.error) {
     // 400 do backend: resolve error_key via i18n e interpola {device}/{detail}
-    // (reusa resolveEvent); sem key, cai no texto cru de res.error.
-    const text = resolveEvent({ key: res.error_key, args: res.args, msg: res.error });
+    // (reusa resolveEvent); sem key, cai no texto cru de data.error. Falha de
+    // rede/500 chega aqui como error.request_failed (postJSON) — nunca marcamos
+    // a direcao como rodando sem worker.
+    const text = resolveEvent({ key: data.error_key, args: data.args, msg: data.error });
     setStatus(panel, 'error', text);
     toggleButtons(panel, false);
     return;
@@ -346,15 +373,21 @@ async function startDirection(dir) {
 
 async function stopDirection(dir) {
   const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
-  await API.stop(dir);
-  state.running.delete(dir);
-  setStatusKey(panel, 'idle', 'status.idle');
-  toggleButtons(panel, false);
-  // zera meters
-  const mi = $role(panel, 'meter-in');
-  const mo = $role(panel, 'meter-out');
-  if (mi) mi.style.width = '0%';
-  if (mo) mo.style.width = '0%';
+  try {
+    const {ok, data} = await API.stop(dir);
+    // Falhou? O painel volta pra idle do mesmo jeito (finally): travar a UI so
+    // piora — o usuario precisa poder tentar de novo.
+    if (!ok) console.error('[laguna] /api/stop falhou:', data);
+  } finally {
+    state.running.delete(dir);
+    setStatusKey(panel, 'idle', 'status.idle');
+    toggleButtons(panel, false);
+    // zera meters
+    const mi = $role(panel, 'meter-in');
+    const mo = $role(panel, 'meter-out');
+    if (mi) mi.style.width = '0%';
+    if (mo) mo.style.width = '0%';
+  }
 }
 
 function buildConfig(panel, dir) {
