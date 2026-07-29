@@ -48,6 +48,7 @@ window.LAGUNA_I18N = {
     "error.start_capture_device_invalid": "Dispositivo de captura [{device}] indisponível — atualize a lista de dispositivos e selecione de novo. ({detail})",
     "error.start_output_device_invalid": "Dispositivo de saída [{device}] indisponível — atualize a lista de dispositivos e selecione de novo. ({detail})",
     "error.invalid_direction": "direction deve ser falar|escutar",
+    "error.request_failed": "Falha ao falar com o servidor local ({detail}) — verifique se o Laguna está rodando.",
     "note.worker_stopped_gain_deferred": "worker parado; ganho será aplicado no próximo start",
 
     // meters
@@ -193,6 +194,7 @@ window.LAGUNA_I18N = {
     "error.start_capture_device_invalid": "Capture device [{device}] unavailable — refresh the device list and pick it again. ({detail})",
     "error.start_output_device_invalid": "Output device [{device}] unavailable — refresh the device list and pick it again. ({detail})",
     "error.invalid_direction": "direction must be falar|escutar",
+    "error.request_failed": "Failed to reach the local server ({detail}) — check that Laguna is running.",
     "note.worker_stopped_gain_deferred": "worker stopped; gain will be applied on next start",
 
     // meters
