@@ -48,6 +48,9 @@ const state = {
   // (inclusive ao trocar de idioma, que re-renderiza via updateLagunaBadge()).
   devicesError: false,
   running: new Set(),
+  // nomes de devices salvos que sumiram da enumeracao, por direcao (#53) —
+  // guardados para re-renderizar o aviso ao trocar o idioma da UI.
+  missingDevices: {falar: [], escutar: []},
 };
 
 const LS_PREFIX = 'laguna';
@@ -88,6 +91,14 @@ const PERSIST_FIELDS = {
   ],
 };
 
+// Selects cujo valor e um indice do PortAudio — identidade instavel (#53).
+// Para estes persistimos tambem {name, hostapi}, que sao estaveis, e resolvemos
+// o indice ATUAL na restauracao. O que vai para /api/start continua sendo o int.
+const DEVICE_ROLES = new Set(['capture_device', 'virtual_out', 'fone_device']);
+// Campo extra no JSON do localStorage: {role: {index, name, hostapi}}. Prefixo
+// `_` para nao colidir com os roles de PERSIST_FIELDS.
+const LS_DEVICES_FIELD = '_devices';
+
 function $all(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
 function $(sel, root = document) { return root.querySelector(sel); }
 function $role(panel, role) { return panel.querySelector(`[data-role="${role}"]`); }
@@ -117,10 +128,78 @@ function fillSelect(sel, items, placeholderKey) {
     const opt = document.createElement('option');
     opt.value = d.index;
     opt.textContent = d.label;
+    // identidade estavel do device (#53): o `label` e decorado com API e marcas,
+    // entao nao serve para comparacao — guardamos os campos crus de /api/devices.
+    opt.dataset.name = d.name == null ? '' : String(d.name);
+    opt.dataset.hostapi = d.hostapi == null ? '' : String(d.hostapi);
     if (d.tags.includes('laguna')) opt.dataset.laguna = '1';
     if (d.tags.includes('vb_cable_in') || d.tags.includes('vb_cable_out')) opt.dataset.cable = '1';
     sel.appendChild(opt);
   }
+}
+
+// {index, name, hostapi} do <option> selecionado, ou null no placeholder.
+function selectedDeviceIdentity(sel) {
+  const opt = sel && sel.options ? sel.options[sel.selectedIndex] : null;
+  if (!opt || opt.value === '') return null;
+  return {index: opt.value, name: opt.dataset.name || '', hostapi: opt.dataset.hostapi || ''};
+}
+
+// Opcoes reais do select (sem o placeholder) no formato do helper de resolucao.
+function deviceOptions(sel) {
+  return Array.from(sel.options)
+    .filter(o => o.value !== '')
+    .map(o => ({value: o.value, name: o.dataset.name || '', hostapi: o.dataset.hostapi || ''}));
+}
+
+// Nome salvo (só existe no formato novo) — usado para avisar o usuario.
+function savedDeviceName(saved) {
+  return saved && typeof saved === 'object' && saved.name ? String(saved.name) : null;
+}
+
+// Funcao pura: dada a selecao salva e as opcoes atuais, devolve o indice (string)
+// a aplicar, ou null. Formato novo ({index,name,hostapi}) casa por name+hostapi e
+// devolve o indice ATUAL desse device — plugar um fone renumera o PortAudio e o
+// indice salvo passa a ser de outro dispositivo (#53). Formato antigo (so indice,
+// de versoes anteriores do app) mantem o caminho de hoje: casa por indice.
+function resolveDeviceSelection(saved, options) {
+  if (saved == null || saved === '') return null;
+  const opts = options || [];
+  if (typeof saved === 'object') {
+    const index = saved.index == null ? null : String(saved.index);
+    if (saved.name) {
+      const hostapi = saved.hostapi == null ? '' : String(saved.hostapi);
+      const hits = opts.filter(o => o.name === String(saved.name) && o.hostapi === hostapi);
+      if (!hits.length) return null;
+      // homonimos no mesmo host API: prefere o que manteve o indice salvo
+      const exact = index != null && hits.find(o => o.value === index);
+      return exact ? exact.value : hits[0].value;
+    }
+    return index != null && opts.some(o => o.value === index) ? index : null;
+  }
+  const legacy = String(saved);
+  return opts.some(o => o.value === legacy) ? legacy : null;
+}
+
+// Aviso por painel de que um device salvo sumiu. `names` vazio esconde o aviso.
+function setDeviceWarning(dir, names) {
+  state.missingDevices[dir] = Array.from(new Set(names.filter(Boolean)));
+  renderDeviceWarning(dir);
+}
+
+function renderDeviceWarning(dir) {
+  const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
+  if (!panel) return;
+  const el = $role(panel, 'device_warn');
+  if (!el) return;
+  const names = state.missingDevices[dir] || [];
+  if (!names.length) {
+    el.textContent = '';
+    el.classList.add('hidden');
+    return;
+  }
+  el.textContent = resolveEvent({key: 'warn.device_missing', args: {names: names.join(', ')}});
+  el.classList.remove('hidden');
 }
 
 function selectByPreference(sel, preferredTag) {
@@ -171,7 +250,10 @@ async function refreshDevices() {
     for (const [role, prop] of PERSIST_FIELDS[dir]) {
       if (prop !== 'value') continue;
       const el = $role(panel, role);
-      if (el && el.tagName === 'SELECT') snapshot[dir][role] = el.value;
+      if (!el || el.tagName !== 'SELECT') continue;
+      // devices vao pela identidade estavel: o clique no 🔄 re-inicializa o
+      // PortAudio e e exatamente ai que os indices renumeram (#53).
+      snapshot[dir][role] = DEVICE_ROLES.has(role) ? selectedDeviceIdentity(el) : el.value;
     }
   }
 
@@ -186,14 +268,29 @@ async function refreshDevices() {
     for (const dir of ['falar', 'escutar']) {
       const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
       if (!panel || !snapshot[dir]) continue;
+      const missing = [];
       for (const [role, val] of Object.entries(snapshot[dir])) {
         if (val === '' || val == null) continue;
         const sel = $role(panel, role);
-        if (sel && Array.from(sel.options).some(o => o.value === String(val))) {
+        if (!sel) continue;
+        if (DEVICE_ROLES.has(role)) {
+          const resolved = resolveDeviceSelection(val, deviceOptions(sel));
+          if (resolved !== null) {
+            sel.value = resolved;
+            savePanelConfig(dir);
+          } else if (savedDeviceName(val)) {
+            sel.value = '';
+            missing.push(savedDeviceName(val));
+          }
+          continue;
+        }
+        if (Array.from(sel.options).some(o => o.value === String(val))) {
           sel.value = String(val);
           savePanelConfig(dir);
         }
       }
+      // soma ao que restorePanelConfig() já apontou nesta mesma passada
+      if (missing.length) setDeviceWarning(dir, (state.missingDevices[dir] || []).concat(missing));
     }
   } finally {
     if (btn) { btn.disabled = false; btn.classList.remove('is-refreshing'); }
@@ -320,23 +417,44 @@ function savePanelConfig(dir) {
   try {
     const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
     const data = {};
+    const devices = {};
     for (const [role, prop] of PERSIST_FIELDS[dir]) {
       const el = $role(panel, role);
-      if (el) data[role] = el[prop];
+      if (!el) continue;
+      data[role] = el[prop];
+      // indice continua salvo em data[role] (compat); a identidade estavel vai
+      // em paralelo, sem mudar o formato dos campos ja existentes (#53).
+      if (DEVICE_ROLES.has(role) && el.tagName === 'SELECT') {
+        const id = selectedDeviceIdentity(el);
+        if (id) devices[role] = id;
+      }
     }
+    data[LS_DEVICES_FIELD] = devices;
     localStorage.setItem(LS_KEYS.cfg(dir), JSON.stringify(data));
   } catch {}
 }
 
 function restorePanelConfig(dir) {
+  const missing = [];
   try {
     const raw = localStorage.getItem(LS_KEYS.cfg(dir));
     if (!raw) return;
     const data = JSON.parse(raw);
+    const savedDevices = data[LS_DEVICES_FIELD] || {};
     const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
     for (const [role, prop] of PERSIST_FIELDS[dir]) {
       const el = $role(panel, role);
       if (!el) continue;
+      // device: resolve pela identidade estavel (cai no indice se a config for
+      // antiga). Sem match, o select fica no placeholder e o usuario e avisado —
+      // melhor que apontar calado para OUTRO dispositivo (#53).
+      if (DEVICE_ROLES.has(role) && prop === 'value' && el.tagName === 'SELECT') {
+        const saved = savedDevices[role] != null ? savedDevices[role] : data[role];
+        const resolved = resolveDeviceSelection(saved, deviceOptions(el));
+        if (resolved !== null) el.value = resolved;
+        else if (savedDeviceName(saved)) { el.value = ''; missing.push(savedDeviceName(saved)); }
+        continue;
+      }
       if (data[role] == null) continue;
       // para <select>, só seta se a opção existe
       if (prop === 'value' && el.tagName === 'SELECT') {
@@ -348,7 +466,9 @@ function restorePanelConfig(dir) {
         el[prop] = data[role];
       }
     }
-  } catch {}
+  } catch {} finally {
+    setDeviceWarning(dir, missing);
+  }
 }
 
 async function startDirection(dir) {
@@ -638,9 +758,11 @@ function initLang() {
       const next = cur === 'pt' ? 'en' : 'pt';
       window.applyI18n(next);
       try { localStorage.setItem(LS_KEYS.lang, next); } catch {}
-      // atualiza badge e placeholders de selects (dependem de T)
+      // atualiza badge, placeholders de selects e avisos de device (dependem de T)
       updateLagunaBadge();
       refreshPlaceholders();
+      renderDeviceWarning('falar');
+      renderDeviceWarning('escutar');
     });
   }
 }
