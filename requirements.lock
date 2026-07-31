@@ -20,6 +20,7 @@ scipy==1.17.1
 webrtcvad-wheels==2.0.14
 fastapi==0.129.0
 uvicorn==0.40.0
+websockets==15.0.1
 
 # --- transitivas críticas (engines de STT/TTS) ---
 ctranslate2==4.6.3

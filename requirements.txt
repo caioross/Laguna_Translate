@@ -7,3 +7,6 @@ scipy>=1.17,<2
 webrtcvad-wheels>=2.0,<3
 fastapi>=0.129,<1
 uvicorn>=0.40,<1
+# uvicorn "puro" só traz click+h11; sem uma lib de WS ele resolve ws=none e
+# rejeita o upgrade do /ws (a UI live inteira). Ver laguna_server.py.
+websockets>=15,<16
