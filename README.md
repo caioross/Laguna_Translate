@@ -312,8 +312,8 @@ C:/Python313/python.exe -m pip install -r requirements.txt
 # Para GPU (opcional — skip se só for rodar em CPU)
 C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 
-# Para launcher .exe-like com janela nativa (opcional)
-C:/Python313/python.exe -m pip install pywebview fastapi uvicorn
+# Para janela nativa em vez do navegador (opcional — sem ele, laguna_app.py cai no navegador padrão)
+C:/Python313/python.exe -m pip install pywebview
 ```
 
 > Para uma instalação **reproduzível** com as versões exatas comprovadas, use o `requirements.lock` no lugar do `requirements.txt`: `C:/Python313/python.exe -m pip install -r requirements.lock`.
@@ -861,8 +861,8 @@ C:/Python313/python.exe -m pip install -r requirements.txt
 # For GPU (optional — skip if running on CPU only)
 C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 
-# For the .exe-like launcher with a native window (optional)
-C:/Python313/python.exe -m pip install pywebview fastapi uvicorn
+# For a native window instead of the browser (optional — without it, laguna_app.py falls back to the default browser)
+C:/Python313/python.exe -m pip install pywebview
 ```
 
 > For a **reproducible** install with the exact proven versions, use `requirements.lock` instead of `requirements.txt`: `C:/Python313/python.exe -m pip install -r requirements.lock`.

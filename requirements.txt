@@ -5,3 +5,5 @@ sounddevice>=0.5,<0.6
 numpy>=2.4,<3
 scipy>=1.17,<2
 webrtcvad-wheels>=2.0,<3
+fastapi>=0.129,<1
+uvicorn>=0.40,<1
