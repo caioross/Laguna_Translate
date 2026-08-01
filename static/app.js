@@ -648,6 +648,10 @@ function onEvent(ev) {
       break;
     case 'error':
       setStatus(panel, 'error', resolveEvent(ev));
+      // Erro recuperável (uma frase falhou, o worker segue traduzindo — issue
+      // #45): mostra o aviso e para por aí. Derrubar os botões aqui deixava
+      // Parar desabilitado com o worker vivo, que é o bug que motivou a issue.
+      if (ev.recoverable) break;
       toggleButtons(panel, false);
       state.running.delete(dir);
       break;
