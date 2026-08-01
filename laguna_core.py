@@ -56,6 +56,15 @@ CAPTURE_MAX_BACKOFF_S = 3.0   # teto do backoff entre tentativas
 CAPTURE_STALL_S = 3.0         # so mic: sem callbacks por mais que isso = captura morta
 CAPTURE_HEALTHY_S = 5.0       # sessao que durou isso reseta o orcamento de retries
 
+# Resiliencia do laco de traducao (issue #45): uma excecao processando UMA frase
+# (Piper engasgando num texto esquisito do Argos, hiccup de CUDA) nao pode
+# encerrar a direcao pelo resto da sessao. Falha isolada emite erro recuperavel e
+# o laco segue para o proximo segmento; so falhas CONSECUTIVAS (o engine morreu
+# de verdade) sao fatais. Uma frase boa zera o contador — mesma doutrina do
+# orcamento de retries da captura (CAPTURE_MAX_RETRIES/CAPTURE_HEALTHY_S). Numero
+# de robustez, nao de latencia: o caminho feliz nunca toca este contador.
+SEGMENT_MAX_FAILURES = 3      # falhas consecutivas de segmento antes do fatal
+
 # Reproducao da traducao (issue #38): um _OutputSink por device de saida, com
 # stream proprio (aberto uma vez e reusado) e thread propria, de modo que as
 # saidas toquem em PARALELO. O laco de traducao ficava bloqueado N x duracao-da-
@@ -344,15 +353,17 @@ class DirectionWorker:
         key: str,
         args: Optional[dict] = None,
         msg: Optional[str] = None,
+        **data,
     ) -> None:
         """Emite evento com chave i18n + args para o cliente resolver.
 
         `msg` e o fallback em portugues (usado se o cliente nao tem a chave
-        ou em logs de console).
+        ou em logs de console). `**data` vai direto no payload do evento, para
+        campos que a UI le sem traduzir (ex.: `recoverable`, issue #45).
         """
         args = args or {}
         fallback = msg if msg is not None else key
-        self._emit(kind, key=key, args=args, msg=fallback)
+        self._emit(kind, key=key, args=args, msg=fallback, **data)
 
     def _run(self) -> None:
         try:
@@ -397,53 +408,116 @@ class DirectionWorker:
             self._emit_key("status", "status.listening", msg="Ouvindo")
             self._emit("ready")
 
-            while not self._stop.is_set():
-                try:
-                    seg = seg_q.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-
-                t0 = time.perf_counter()
-                if self.cfg.skip_same_lang:
-                    text, detected = stt.transcribe_with_lang(seg)
-                else:
-                    text = stt.transcribe(seg)
-                    detected = self.cfg.src_lang
-                t_stt = (time.perf_counter() - t0) * 1000
-                if not text.strip():
-                    continue
-
-                self._emit("stt", text=text, lang=detected, ms=round(t_stt))
-
-                if self.cfg.skip_same_lang and detected == self.cfg.tgt_lang:
-                    self._emit("skipped", reason=f"detected={detected} == tgt; sem traducao")
-                    self._lat_stt.append(t_stt)
-                    self._push_latency()
-                    continue
-
-                t0 = time.perf_counter()
-                translated = mt.translate(text)
-                t_mt = (time.perf_counter() - t0) * 1000
-                self._emit("mt", text=translated, ms=round(t_mt))
-
-                t0 = time.perf_counter()
-                audio_out = tts.synthesize(translated)
-                t_tts = (time.perf_counter() - t0) * 1000
-
-                total = t_stt + t_mt + t_tts
-                self._lat_stt.append(t_stt)
-                self._lat_mt.append(t_mt)
-                self._lat_tts.append(t_tts)
-                self._lat_total.append(total)
-                self._push_latency()
-
-                self._play(audio_out, tts.sample_rate)
+            self._translation_loop(seg_q, stt, mt, tts)
         except Exception as e:
+            # Falha de SETUP (modelo que nao carrega, warmup) segue matando a
+            # direcao na hora: "sem modelo" nao vira retry infinito. O laco de
+            # traducao trata as proprias falhas em _translation_loop.
             self._emit("error", msg=f"{type(e).__name__}: {e}")
         finally:
             # Fecha streams de saida e junta as threads dos sinks: parar/reiniciar
             # a direcao varias vezes nao pode vazar device (issue #38).
             self._close_sinks()
+
+    def _translation_loop(self, seg_q: "queue.Queue[np.ndarray]", stt, mt, tts) -> None:
+        """Consome segmentos ate o stop — sobrevivendo a falha de UMA frase.
+
+        Antes (issue #45) o laco inteiro vivia sob o mesmo `try` do setup: uma
+        excecao em qualquer engine encerrava a direcao pelo resto da sessao,
+        deixando `_capture`/`_segmenter` rodando (o `_stop` nunca era setado) e o
+        app "vivo" sem traduzir. Aqui a falha e por frase: emite erro recuperavel
+        e segue. So `SEGMENT_MAX_FAILURES` falhas CONSECUTIVAS sao fatais — e
+        nesse caso o `_stop` e setado ANTES de sair, para nao deixar thread
+        zumbi segurando o device de captura e enchendo fila.
+        """
+        fails = 0  # falhas consecutivas; uma frase boa zera
+        while not self._stop.is_set():
+            try:
+                seg = seg_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            try:
+                self._process_segment(seg, stt, mt, tts)
+            except Exception as e:
+                if self._stop.is_set():
+                    return  # parar no meio de uma frase nao e falha
+                fails += 1
+                detail = f"{type(e).__name__}: {e}"
+                log(
+                    f"[{self.cfg.name}] falha ao processar segmento "
+                    f"({fails}/{SEGMENT_MAX_FAILURES}): {detail}"
+                )
+                if fails >= SEGMENT_MAX_FAILURES:
+                    # Fatal: encerra a direcao de verdade. `_stop` primeiro, para
+                    # que captura e segmentador saiam junto com este laco.
+                    self._stop.set()
+                    self._emit_key(
+                        "error",
+                        "error.direction_lost",
+                        {"max": SEGMENT_MAX_FAILURES, "detail": detail},
+                        msg=(
+                            f"Direcao encerrada: {SEGMENT_MAX_FAILURES} frases seguidas "
+                            f"falharam. ({detail})"
+                        ),
+                    )
+                    return
+                # Recuperavel: a UI mostra o aviso mas NAO derruba os botoes —
+                # a direcao continua traduzindo a proxima frase.
+                self._emit_key(
+                    "error",
+                    "error.segment_failed",
+                    {"attempt": fails, "max": SEGMENT_MAX_FAILURES, "detail": detail},
+                    msg=f"Frase perdida ({fails}/{SEGMENT_MAX_FAILURES}): {detail}",
+                    recoverable=True,
+                )
+            else:
+                fails = 0
+
+    def _process_segment(self, seg: np.ndarray, stt, mt, tts) -> None:
+        """Traduz UM segmento: STT -> MT -> TTS -> reproducao nos sinks.
+
+        Extraido do laco (issue #45) para que a falha de uma frase seja isolavel
+        num `try` proprio e para que o caminho quente seja testavel com dubles,
+        sem sounddevice, modelo ou GPU. Excecao aqui sobe para o chamador — as
+        latencias so entram em `_lat_*` no fim, entao segmento que falhou nao
+        polui a metrica (a metrica nao pode mentir por omissao, cf. issue #21).
+        """
+        t0 = time.perf_counter()
+        if self.cfg.skip_same_lang:
+            text, detected = stt.transcribe_with_lang(seg)
+        else:
+            text = stt.transcribe(seg)
+            detected = self.cfg.src_lang
+        t_stt = (time.perf_counter() - t0) * 1000
+        if not text.strip():
+            return
+
+        self._emit("stt", text=text, lang=detected, ms=round(t_stt))
+
+        if self.cfg.skip_same_lang and detected == self.cfg.tgt_lang:
+            self._emit("skipped", reason=f"detected={detected} == tgt; sem traducao")
+            self._lat_stt.append(t_stt)
+            self._push_latency()
+            return
+
+        t0 = time.perf_counter()
+        translated = mt.translate(text)
+        t_mt = (time.perf_counter() - t0) * 1000
+        self._emit("mt", text=translated, ms=round(t_mt))
+
+        t0 = time.perf_counter()
+        audio_out = tts.synthesize(translated)
+        t_tts = (time.perf_counter() - t0) * 1000
+
+        total = t_stt + t_mt + t_tts
+        self._lat_stt.append(t_stt)
+        self._lat_mt.append(t_mt)
+        self._lat_tts.append(t_tts)
+        self._lat_total.append(total)
+        self._push_latency()
+
+        self._play(audio_out, tts.sample_rate)
 
     def _update_level(self, kind: str, arr: np.ndarray) -> None:
         """Atualiza medidor de nivel (in/out) com EMA + emite throttled (10Hz)."""

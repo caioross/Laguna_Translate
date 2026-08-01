@@ -570,7 +570,26 @@ function buildConfig(panel, dir) {
   return cfg;
 }
 
+// Aviso de erro recuperável (#45) volta sozinho para "rodando" depois disto.
+// Deixar o aviso fixo seria o erro simétrico ao que a issue corrigiu: o painel
+// ficaria vermelho com um contador ("2/3") congelado enquanto a direção segue
+// traduzindo — e uma frase boa já zerou esse orçamento no backend.
+const RECOVERABLE_STATUS_MS = 4000;
+const recoverTimers = {};  // dir -> timer pendente de volta ao normal
+
+// Toda pintura de status cancela a volta pendente: assim o timer nunca repinta
+// "rodando" por cima de um erro fatal, de um Parar ou de um novo Iniciar que
+// tenham chegado no meio da janela.
+function clearRecoverTimer(panel) {
+  const dir = panel.dataset.dir;
+  if (recoverTimers[dir]) {
+    clearTimeout(recoverTimers[dir]);
+    delete recoverTimers[dir];
+  }
+}
+
 function setStatus(panel, cls, text) {
+  clearRecoverTimer(panel);
   const el = $role(panel, 'status');
   el.className = `status ${cls}`;
   el.textContent = text;
@@ -578,6 +597,7 @@ function setStatus(panel, cls, text) {
 }
 
 function setStatusKey(panel, cls, key) {
+  clearRecoverTimer(panel);
   const el = $role(panel, 'status');
   el.className = `status ${cls}`;
   el.setAttribute('data-i18n', key);
@@ -647,6 +667,18 @@ function onEvent(ev) {
       $role(panel, 'n').textContent = ev.samples ?? 0;
       break;
     case 'error':
+      // Erro recuperável (uma frase falhou, o worker segue traduzindo — issue
+      // #45): aviso âmbar transitório, sem derrubar os botões. Derrubá-los era o
+      // bug que motivou a issue (Parar desabilitado com o worker vivo); fixar o
+      // aviso em vermelho seria trocá-lo por outro, com o painel gritando erro
+      // sobre uma direção saudável.
+      if (ev.recoverable) {
+        setStatus(panel, 'warn', resolveEvent(ev));
+        recoverTimers[dir] = setTimeout(() => {
+          setStatusKey(panel, 'running', 'status.running');
+        }, RECOVERABLE_STATUS_MS);
+        break;
+      }
       setStatus(panel, 'error', resolveEvent(ev));
       toggleButtons(panel, false);
       state.running.delete(dir);
