@@ -178,6 +178,8 @@ html, body {
 .status.loading{ background: rgba(245,158,11,0.15); color: var(--warn); }
 .status.running{ background: rgba(34,197,94,0.15); color: var(--success); }
 .status.error  { background: rgba(239,68,68,0.15); color: var(--danger); }
+/* aviso transitorio: algo falhou mas a direcao segue viva (#45) */
+.status.warn   { background: rgba(245,158,11,0.15); color: var(--warn); }
 
 .form {
   padding: 16px 20px;
