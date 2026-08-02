@@ -79,11 +79,30 @@ async def api_devices() -> JSONResponse:
     return JSONResponse(data)
 
 
+def _running_directions() -> list[str]:
+    """Direcoes REALMENTE vivas, despejando as que morreram sozinhas.
+
+    `_workers` so perdia entrada no `/api/stop`. Uma direcao que morre por conta
+    propria (captura perdida, falhas consecutivas, falha de setup) continuava
+    listada, e o `hello` do WS respondia com ela em `running`: um F5 — reacao
+    natural de quem acabou de ver um erro — repintava o painel de verde "Em
+    execucao" sobre uma direcao que nao traduz mais (issue #62).
+
+    So remove do dicionario; nao chama `stop()`. O worker morto ja fechou os
+    proprios sinks no `finally` de `_run`, e `stop()` faz `join` de ate 2s por
+    thread — caro demais para um handler async.
+    """
+    with _lock:
+        for name in [n for n, w in _workers.items() if not w.is_alive()]:
+            _workers.pop(name, None)
+        return list(_workers.keys())
+
+
 @app.get("/api/status")
 async def api_status() -> JSONResponse:
     return JSONResponse(
         {
-            "running": list(_workers.keys()),
+            "running": _running_directions(),
         }
     )
 
@@ -307,7 +326,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     _clients.add(ws)
     try:
-        await ws.send_text(json.dumps({"kind": "hello", "running": list(_workers.keys())}))
+        await ws.send_text(json.dumps({"kind": "hello", "running": _running_directions()}))
         while True:
             _ = await ws.receive_text()  # mantem conexao; comandos via REST
     except WebSocketDisconnect:
