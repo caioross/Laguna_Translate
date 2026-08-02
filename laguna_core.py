@@ -341,6 +341,16 @@ class DirectionWorker:
         for t in self._threads:
             t.join(timeout=2)
 
+    def is_alive(self) -> bool:
+        """A direcao ainda pode traduzir?
+
+        `False` depois de `stop()` e tambem quando ela morreu SOZINHA — captura
+        perdida, falhas consecutivas de segmento ou falha de setup: todo caminho
+        de saida de `_run` seta `_stop`. O servidor le isto para nao anunciar
+        direcao morta em `running` (issue #62).
+        """
+        return not self._stop.is_set()
+
     def _emit(self, kind: str, **data) -> None:
         try:
             self.on_event({"dir": self.cfg.name, "kind": kind, **data})
@@ -415,6 +425,12 @@ class DirectionWorker:
             # traducao trata as proprias falhas em _translation_loop.
             self._emit("error", msg=f"{type(e).__name__}: {e}")
         finally:
+            # Saiu de `_run` = direcao acabou, por qualquer caminho. `_stop`
+            # aqui e a rede final da doutrina do #45: cobre tambem a falha de
+            # SETUP acima (modelo que nao carrega), que nao passa pelo laco de
+            # traducao e ate agora deixava `_stop` limpo — worker morto que o
+            # servidor continuava listando como `running` (issue #62).
+            self._stop.set()
             # Fecha streams de saida e junta as threads dos sinks: parar/reiniciar
             # a direcao varias vezes nao pode vazar device (issue #38).
             self._close_sinks()
@@ -693,6 +709,12 @@ class DirectionWorker:
                     f"(tentativa {attempt}/{CAPTURE_MAX_RETRIES}): {e}"
                 )
                 if attempt >= CAPTURE_MAX_RETRIES:
+                    # Fatal: mesma doutrina do laco de traducao (#45) — `_stop`
+                    # ANTES de sair, para que segmentador e laco de traducao
+                    # saiam junto. Sem isto a captura morre sozinha e o resto
+                    # segue girando com a fila vazia, os devices de saida
+                    # presos e o app "vivo" sem traduzir (issue #62).
+                    self._stop.set()
                     self._emit_key(
                         "error",
                         "error.capture_lost",
