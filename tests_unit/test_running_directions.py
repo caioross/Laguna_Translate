@@ -45,16 +45,22 @@ def test_direcao_viva_continua_listada():
     assert laguna_server._running_directions() == ["falar"]
 
 
-def test_direcao_morta_some_de_running_e_do_dicionario():
+def test_direcao_morta_some_de_running_mas_a_referencia_fica():
     morta = _WorkerDuble(viva=False)
     laguna_server._workers["falar"] = morta
 
     assert laguna_server._running_directions() == []
-    # Despejo de verdade: um segundo `hello` nao pode ressuscitar a direcao.
-    assert "falar" not in laguna_server._workers
+    # `is_alive()` e monotonico (`_stop` nunca e limpo): um segundo `hello` nao
+    # ressuscita a direcao sem precisar despejar nada.
     assert laguna_server._running_directions() == []
-    # `stop()` faz join de ate 2s por thread; o worker morto ja fechou os
-    # proprios sinks no `finally` de `_run`. Handler async nao paga isso.
+    # A referencia PRECISA sobreviver: quando `_running_directions` roda, o
+    # worker acabou de setar `_stop` e ainda pode estar segurando os devices de
+    # saida (`_close_sinks()` so roda no fim do `finally` de `_run`). Despeja-la
+    # aqui deixaria `/api/stop` e o `existing.stop()` do start sem ninguem para
+    # chamar, e o device preso ate o processo morrer (doutrina da #38).
+    assert laguna_server._workers["falar"] is morta
+    # Consultar quem esta vivo e leitura: `/api/status` e o `hello` nao param
+    # worker nenhum (`stop()` faz join de ate 2s por thread).
     assert morta.stops == 0
 
 
@@ -63,7 +69,18 @@ def test_uma_direcao_morta_nao_derruba_a_irma_viva():
     laguna_server._workers["escutar"] = _WorkerDuble()
 
     assert laguna_server._running_directions() == ["escutar"]
-    assert list(laguna_server._workers) == ["escutar"]
+    assert sorted(laguna_server._workers) == ["escutar", "falar"]
+
+
+def test_consultar_running_nao_muta_o_dicionario():
+    """`/api/status` e GET: sonda de monitoramento ou prefetch nao mexem no estado."""
+    laguna_server._workers["falar"] = _WorkerDuble(viva=False)
+    laguna_server._workers["escutar"] = _WorkerDuble()
+    antes = dict(laguna_server._workers)
+
+    laguna_server._running_directions()
+
+    assert laguna_server._workers == antes
 
 
 def test_sem_worker_nenhum_running_e_vazio():

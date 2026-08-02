@@ -80,7 +80,7 @@ async def api_devices() -> JSONResponse:
 
 
 def _running_directions() -> list[str]:
-    """Direcoes REALMENTE vivas, despejando as que morreram sozinhas.
+    """Direcoes REALMENTE vivas — filtra a lista, nao despeja o dicionario.
 
     `_workers` so perdia entrada no `/api/stop`. Uma direcao que morre por conta
     propria (captura perdida, falhas consecutivas, falha de setup) continuava
@@ -88,14 +88,18 @@ def _running_directions() -> list[str]:
     natural de quem acabou de ver um erro — repintava o painel de verde "Em
     execucao" sobre uma direcao que nao traduz mais (issue #62).
 
-    So remove do dicionario; nao chama `stop()`. O worker morto ja fechou os
-    proprios sinks no `finally` de `_run`, e `stop()` faz `join` de ate 2s por
-    thread — caro demais para um handler async.
+    Filtrar basta: `_stop` nunca e limpo, entao `is_alive()` e monotonico e a
+    direcao morta jamais reaparece em `running`. Remover a entrada aqui seria
+    jogar fora a UNICA referencia ao worker num instante em que ele AINDA segura
+    device — `_stop` e setado no comeco do `finally` de `_run` e `_close_sinks()`
+    so roda depois que o laco de traducao retorna (pode levar segundos, ou nunca
+    se um engine pendurar). Sem a referencia, o `existing.stop()` do `/api/start`
+    e o `stop()` do `/api/stop` viram no-op silencioso e o device de saida fica
+    preso ate o processo morrer — exatamente o vazamento que a #38 fechou. Quem
+    solta o worker do dicionario continua sendo `/api/stop` (ou o proximo start).
     """
     with _lock:
-        for name in [n for n, w in _workers.items() if not w.is_alive()]:
-            _workers.pop(name, None)
-        return list(_workers.keys())
+        return [n for n, w in _workers.items() if w.is_alive()]
 
 
 @app.get("/api/status")
