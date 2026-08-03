@@ -14,7 +14,12 @@ import time
 import numpy as np
 import pytest
 
-from laguna_core import DirectionConfig, DirectionWorker, _OutputSink
+from laguna_core import (
+    OUT_SINK_MAX_ERRORS,
+    DirectionConfig,
+    DirectionWorker,
+    _OutputSink,
+)
 
 SR = 22050
 FRASE_S = 0.15  # "duracao" simulada de uma frase
@@ -65,11 +70,17 @@ def _wait_streams(store: dict, n: int, timeout: float = 2.0) -> None:
         time.sleep(0.005)
 
 
+def _coletor(errors):
+    """Callback `on_error(dev, exc, consecutivas)` que so acumula (issue #54)."""
+
+    def _cb(dev, exc, consecutivas):
+        errors.append((dev, exc, consecutivas))
+
+    return _cb
+
+
 def _sinks(devices, store, errors, dur=FRASE_S):
-    return [
-        _OutputSink(d, SR, lambda dev, exc: errors.append((dev, exc)), _factory(store, dur))
-        for d in devices
-    ]
+    return [_OutputSink(d, SR, _coletor(errors), _factory(store, dur)) for d in devices]
 
 
 def test_abre_stream_no_start_e_reusa_entre_frases():
@@ -113,12 +124,12 @@ def test_duas_saidas_comecam_juntas_e_tocam_em_paralelo():
 
 def test_falha_de_um_device_nao_impede_os_outros():
     store, errors = {}, []
-    bom = _OutputSink(1, SR, lambda dev, exc: errors.append((dev, exc)), _factory(store))
+    bom = _OutputSink(1, SR, _coletor(errors), _factory(store))
 
     def _quebrado(device: int, samplerate: int):
         raise RuntimeError("device sumiu")
 
-    ruim = _OutputSink(2, SR, lambda dev, exc: errors.append((dev, exc)), _quebrado)
+    ruim = _OutputSink(2, SR, _coletor(errors), _quebrado)
     try:
         _wait_streams(store, 1)
         for s in (bom, ruim):
@@ -126,7 +137,7 @@ def test_falha_de_um_device_nao_impede_os_outros():
         for s in (bom, ruim):
             assert s.wait(2.0)
         assert len(store[1].writes) == 1  # o device bom tocou
-        assert errors and all(dev == 2 for dev, _ in errors)  # erro so do ruim
+        assert errors and all(dev == 2 for dev, _, _ in errors)  # erro so do ruim
     finally:
         bom.close()
         ruim.close()
@@ -147,7 +158,7 @@ def test_erro_de_escrita_reabre_stream_na_frase_seguinte():
         abertos.append(st)
         return st
 
-    sink = _OutputSink(3, SR, lambda dev, exc: errors.append((dev, exc)), _open)
+    sink = _OutputSink(3, SR, _coletor(errors), _open)
     try:
         sink.submit(PCM)
         assert sink.wait(2.0)
@@ -202,7 +213,7 @@ def test_parar_com_frase_tocando_nao_vira_erro_de_device():
         criados.append(st)
         return st
 
-    sink = _OutputSink(11, SR, lambda dev, exc: errors.append((dev, exc)), _open)
+    sink = _OutputSink(11, SR, _coletor(errors), _open)
     sink.submit(PCM)
     assert criados[0].no_write.wait(2.0)  # thread esta DENTRO do write
     sink.close()
@@ -220,13 +231,11 @@ def test_falha_de_device_fora_do_stop_continua_reportada():
         def write(self, data):
             raise RuntimeError("device sumiu no meio da frase")
 
-    sink = _OutputSink(
-        12, SR, lambda dev, exc: errors.append((dev, exc)), lambda d, sr: _SempreFalha(d, sr)
-    )
+    sink = _OutputSink(12, SR, _coletor(errors), lambda d, sr: _SempreFalha(d, sr))
     try:
         sink.submit(PCM)
         assert sink.wait(2.0)
-        assert [dev for dev, _ in errors] == [12]  # sem stop: erro chega a UI
+        assert [dev for dev, _, _ in errors] == [12]  # sem stop: erro chega a UI
     finally:
         sink.close()
 
@@ -253,3 +262,96 @@ def test_play_do_worker_nao_cresce_com_o_numero_de_saidas():
     assert duas < uma * 1.8  # em serie seria ~2x
     assert not errors
     assert w._sinks == []  # _close_sinks nao deixa sink pendurado
+
+
+# --- issue #54: soluco de UM device nao pode matar a direcao -----------------
+
+
+def _worker():
+    """Worker inerte (nenhuma thread sobe no __init__) + lista de eventos."""
+    eventos: list[dict] = []
+    cfg = DirectionConfig(name="falar", src_lang="pt", tgt_lang="en")
+    return DirectionWorker(cfg, on_event=eventos.append), eventos
+
+
+def test_falha_isolada_de_saida_e_recuperavel_e_nao_para_a_direcao():
+    """O bug da #54: uma falha virava `error.play`, e app.js trata erro
+    nao-recuperavel como fim de sessao — Stop desabilitado com o worker vivo."""
+    w, eventos = _worker()
+    w._on_sink_error(5, RuntimeError("power save"), 1)
+
+    (ev,) = eventos
+    assert ev["kind"] == "error" and ev["key"] == "error.output_retry"
+    assert ev["recoverable"] is True  # aviso ambar; painel segue 'rodando'
+    assert ev["args"] == {
+        "dev": 5,
+        "attempt": 1,
+        "max": OUT_SINK_MAX_ERRORS,
+        "detail": "power save",
+    }
+
+
+def test_falhas_consecutivas_ate_o_teto_viram_erro_terminal_com_o_device():
+    w, eventos = _worker()
+    for n in range(1, OUT_SINK_MAX_ERRORS + 1):
+        w._on_sink_error(7, RuntimeError("device sumiu"), n)
+
+    chaves = [e["key"] for e in eventos]
+    assert chaves == ["error.output_retry"] * (OUT_SINK_MAX_ERRORS - 1) + ["error.play"]
+    fatal = eventos[-1]
+    assert not fatal.get("recoverable")  # terminal: agora a saida esta perdida
+    assert fatal["args"]["dev"] == 7 and fatal["args"]["max"] == OUT_SINK_MAX_ERRORS
+
+
+def test_frase_tocada_zera_o_orcamento_do_device():
+    """Falhas ESPACADAS (um soluco por hora) nunca podem somar ate o teto."""
+    errors: list = []
+    falhar = {"v": True}
+
+    class _Controlado(FakeStream):
+        def write(self, data):
+            if falhar["v"]:
+                raise RuntimeError("device engasgou")
+            super().write(data)
+
+    sink = _OutputSink(21, SR, _coletor(errors), lambda d, sr: _Controlado(d, sr))
+    try:
+        for _ in range(2):
+            sink.submit(PCM)
+            assert sink.wait(2.0)
+        assert [n for _, _, n in errors] == [1, 2]
+
+        falhar["v"] = False  # frase boa no meio
+        sink.submit(PCM)
+        assert sink.wait(2.0)
+
+        falhar["v"] = True
+        sink.submit(PCM)
+        assert sink.wait(2.0)
+        # 1, nao 3: o sucesso zerou o contador e a direcao nao morre.
+        assert [n for _, _, n in errors] == [1, 2, 1]
+    finally:
+        sink.close()
+
+
+def test_orcamento_e_por_device_e_nao_contamina_o_vizinho():
+    errors: list = []
+
+    class _SempreFalha(FakeStream):
+        def write(self, data):
+            raise RuntimeError("device sumiu")
+
+    a = _OutputSink(31, SR, _coletor(errors), lambda d, sr: _SempreFalha(d, sr))
+    b = _OutputSink(32, SR, _coletor(errors), lambda d, sr: _SempreFalha(d, sr))
+    try:
+        for _ in range(2):
+            a.submit(PCM)
+            assert a.wait(2.0)
+        b.submit(PCM)
+        assert b.wait(2.0)
+
+        assert [n for dev, _, n in errors if dev == 31] == [1, 2]
+        assert [n for dev, _, n in errors if dev == 32] == [1]  # vizinho no zero
+    finally:
+        a.close()
+        b.close()
