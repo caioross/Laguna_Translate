@@ -652,10 +652,26 @@ function onEvent(ev) {
   const dir = ev.dir;
   if (!dir) {
     if (ev.kind === 'hello' && Array.isArray(ev.running)) {
-      for (const d of ev.running) {
-        state.running.add(d);
-        const p = document.querySelector(`.panel[data-dir="${d}"]`);
-        if (p) { setStatusKey(p, 'running', 'status.running'); toggleButtons(p, true); }
+      // O `hello` é a verdade do servidor sobre quem está vivo — e ele chega
+      // também na RECONEXÃO do WS (onclose → connectWS), não só no F5. Direção
+      // ausente da lista morreu enquanto o socket estava caído: o erro terminal
+      // foi transmitido para um socket morto e a UI nunca o viu. Sem desligar o
+      // painel aqui, ele fica verde "Em execução" com o Parar habilitado sobre
+      // direção que não traduz mais — o sintoma da #62 pelo caminho sem F5.
+      // Só desligamos o que o cliente ACHAVA que estava rodando: painel em erro
+      // já saiu de state.running (mantém o erro na tela) e start otimista ainda
+      // não entrou (não sofre stomp com o POST em voo).
+      for (const p of document.querySelectorAll('.panel[data-dir]')) {
+        const d = p.dataset.dir;
+        if (ev.running.includes(d)) {
+          state.running.add(d);
+          setStatusKey(p, 'running', 'status.running');
+          toggleButtons(p, true);
+        } else if (state.running.has(d)) {
+          state.running.delete(d);
+          setStatusKey(p, 'idle', 'status.idle');
+          toggleButtons(p, false);
+        }
       }
     }
     return;

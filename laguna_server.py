@@ -208,11 +208,34 @@ async def api_devices() -> JSONResponse:
     return JSONResponse(data)
 
 
+def _running_directions() -> list[str]:
+    """Direcoes REALMENTE vivas — filtra a lista, nao despeja o dicionario.
+
+    `_workers` so perdia entrada no `/api/stop`. Uma direcao que morre por conta
+    propria (captura perdida, falhas consecutivas, falha de setup) continuava
+    listada, e o `hello` do WS respondia com ela em `running`: um F5 — reacao
+    natural de quem acabou de ver um erro — repintava o painel de verde "Em
+    execucao" sobre uma direcao que nao traduz mais (issue #62).
+
+    Filtrar basta: `_stop` nunca e limpo, entao `is_alive()` e monotonico e a
+    direcao morta jamais reaparece em `running`. Remover a entrada aqui seria
+    jogar fora a UNICA referencia ao worker num instante em que ele AINDA segura
+    device — `_stop` e setado no comeco do `finally` de `_run` e `_close_sinks()`
+    so roda depois que o laco de traducao retorna (pode levar segundos, ou nunca
+    se um engine pendurar). Sem a referencia, o `existing.stop()` do `/api/start`
+    e o `stop()` do `/api/stop` viram no-op silencioso e o device de saida fica
+    preso ate o processo morrer — exatamente o vazamento que a #38 fechou. Quem
+    solta o worker do dicionario continua sendo `/api/stop` (ou o proximo start).
+    """
+    with _lock:
+        return [n for n, w in _workers.items() if w.is_alive()]
+
+
 @app.get("/api/status")
 async def api_status() -> JSONResponse:
     return JSONResponse(
         {
-            "running": list(_workers.keys()),
+            "running": _running_directions(),
         }
     )
 
@@ -436,7 +459,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     _clients.add(ws)
     try:
-        await ws.send_text(json.dumps({"kind": "hello", "running": list(_workers.keys())}))
+        await ws.send_text(json.dumps({"kind": "hello", "running": _running_directions()}))
         while True:
             _ = await ws.receive_text()  # mantem conexao; comandos via REST
     except WebSocketDisconnect:
