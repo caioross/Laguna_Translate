@@ -1,6 +1,8 @@
 // Laguna Translator — frontend
 const API = {
-  devices: () => fetch('/api/devices').then(r => {
+  // refresh=true só no clique do 🔄: pede ao backend re-inicializar o PortAudio
+  // (caro) para enxergar hardware plugado/renomeado depois do boot.
+  devices: (refresh = false) => fetch(refresh ? '/api/devices?refresh=1' : '/api/devices').then(r => {
     if (!r.ok) throw new Error(`/api/devices HTTP ${r.status}`);
     return r.json();
   }),
@@ -211,9 +213,9 @@ function selectByPreference(sel, preferredTag) {
 
 // Carrega os dispositivos. NUNCA propaga exceção: falha de /api/devices vira
 // feedback visível no badge (e devolve false) para não abortar o resto do boot.
-async function loadDevices() {
+async function loadDevices(refresh = false) {
   try {
-    state.devices = await API.devices();
+    state.devices = await API.devices(refresh);
   } catch (err) {
     console.error('[laguna] falha ao carregar dispositivos:', err);
     state.devicesError = true;
@@ -258,11 +260,15 @@ async function refreshDevices() {
   }
 
   if (btn) { btn.disabled = true; btn.classList.add('is-refreshing'); }
+  setDevicesHint(null);
   try {
-    const ok = await loadDevices();
+    const ok = await loadDevices(true);
     // falhou: o badge já sinalizou o erro e os selects seguem como estavam —
     // nada a re-aplicar. O finally reabilita o botão para nova tentativa.
     if (!ok) return;
+    // o backend diz se conseguiu mesmo re-detectar; sem isso o usuário
+    // interpretaria "lista igual" como hardware dele com problema.
+    showRefreshOutcome(state.devices.refresh);
     // re-aplica a seleção capturada por cima da preferência automática,
     // mas só quando o device continua existindo entre as opções
     for (const dir of ['falar', 'escutar']) {
@@ -295,6 +301,29 @@ async function refreshDevices() {
   } finally {
     if (btn) { btn.disabled = false; btn.classList.remove('is-refreshing'); }
   }
+}
+
+// Aviso inline (aria-live) ao lado do 🔄. `key` null esconde o aviso.
+function setDevicesHint(key) {
+  const el = document.getElementById('devices-hint');
+  if (!el) return;
+  if (!key) {
+    el.hidden = true;
+    el.textContent = '';
+    el.removeAttribute('data-i18n');
+    return;
+  }
+  const T = window.LAGUNA_T || ((k) => k);
+  el.setAttribute('data-i18n', key);  // re-traduzido ao trocar de idioma
+  el.textContent = T(key);
+  el.hidden = false;
+}
+
+// Traduz o campo `refresh` de /api/devices em feedback para o usuário.
+function showRefreshOutcome(info) {
+  if (!info || !info.requested || info.applied) { setDevicesHint(null); return; }
+  if (info.reason === 'workers_running') setDevicesHint('devices.refresh_blocked_running');
+  else setDevicesHint('devices.refresh_unsupported');
 }
 
 function refreshVolumeLabels(dir) {

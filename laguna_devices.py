@@ -48,6 +48,42 @@ def list_devices() -> dict:
     return {"inputs": inputs, "outputs": outputs, "loopbacks": loopbacks}
 
 
+def reinit_portaudio() -> bool:
+    """Re-inicializa o PortAudio para que a proxima enumeracao veja hardware novo.
+
+    O PortAudio enumera os devices uma unica vez (no `Pa_Initialize` que o
+    sounddevice dispara no primeiro uso do processo) e serve a lista de um cache
+    estatico: sem este ciclo, `list_devices()` nunca ve um fone plugado depois,
+    um VB-CABLE instalado depois nem um device renomeado (issue #37).
+
+    `_terminate`/`_initialize` sao API PRIVADA do sounddevice: acesso defensivo
+    (`getattr` + `try/except`). Versao sem esses simbolos, ou ciclo que falha,
+    degrada para a enumeracao normal (retorna False) — nunca quebra quem chama.
+
+    CUIDADO (responsabilidade de quem chama): `_terminate()` derruba streams
+    abertos e REATRIBUI os indices dos devices. So chame com nenhum worker vivo.
+    """
+    terminate = getattr(sd, "_terminate", None)
+    initialize = getattr(sd, "_initialize", None)
+    if not callable(terminate) or not callable(initialize):
+        return False
+    try:
+        terminate()
+    except Exception:
+        return False
+    try:
+        initialize()
+        return True
+    except Exception:
+        # PortAudio ficou terminado: uma segunda tentativa e o melhor esforco
+        # para nao deixar o processo sem enumeracao ate reiniciar o servidor.
+        try:
+            initialize()
+        except Exception:
+            pass
+        return False
+
+
 def _device_label(d: dict, api: str) -> str:
     name = d["name"]
     marks = []
