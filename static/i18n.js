@@ -66,6 +66,7 @@ window.LAGUNA_I18N = {
     "aria.refresh_devices": "Atualizar dispositivos",
     "aria.meter_in": "Nível de entrada",
     "aria.meter_out": "Nível de saída",
+    "aria.setup_cta": "Abrir o passo a passo de configuração",
 
     // labels
     "label.langs": "Idioma falado → alvo",
@@ -145,6 +146,7 @@ window.LAGUNA_I18N = {
     "badge.laguna_cable": "🎛 VB-CABLE detectado (renomeie para \"Laguna\")",
     "badge.laguna_none": "⚠ Sem dispositivo virtual (instale VB-CABLE)",
     "badge.devices_error": "⚠ Falha ao listar dispositivos — verifique o servidor e clique em 🔄",
+    "badge.setup_cta": "como resolver →",
     "warn.device_missing": "⚠ Dispositivo salvo não encontrado: {names}. Selecione outro (a escolha anterior não foi aplicada).",
     "placeholder.mic": "Selecione um microfone",
     "placeholder.virtual_out": "Selecione a saída virtual",
@@ -216,6 +218,7 @@ window.LAGUNA_I18N = {
     "aria.refresh_devices": "Refresh devices",
     "aria.meter_in": "Input level",
     "aria.meter_out": "Output level",
+    "aria.setup_cta": "Open the setup step by step",
 
     // labels
     "label.langs": "Spoken language → target",
@@ -295,6 +298,7 @@ window.LAGUNA_I18N = {
     "badge.laguna_cable": "🎛 VB-CABLE detected (rename to \"Laguna\")",
     "badge.laguna_none": "⚠ No virtual device (install VB-CABLE)",
     "badge.devices_error": "⚠ Failed to list devices — check the server and click 🔄",
+    "badge.setup_cta": "how to fix →",
     "warn.device_missing": "⚠ Saved device not found: {names}. Pick another one (the previous choice was not applied).",
     "placeholder.mic": "Select a microphone",
     "placeholder.virtual_out": "Select virtual output",

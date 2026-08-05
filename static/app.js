@@ -308,23 +308,62 @@ function refreshVolumeLabels(dir) {
   if (ptLbl && ptVol) ptLbl.textContent = `${parseFloat(ptVol.value || '0')} dB`;
 }
 
+// Abre o passo a passo do rodapé, rola até ele e devolve o foco ao <summary>
+// (o guia é a resposta para os estados amarelo/vermelho do badge — #65).
+function openSetupGuide() {
+  const guide = document.getElementById('setup-guide');
+  if (!guide) return;
+  guide.open = true;
+  // o evento 'toggle' do <details> é assíncrono: sincroniza já, no mesmo tick
+  syncSetupGuideCta();
+  guide.scrollIntoView({behavior: 'smooth', block: 'start'});
+  const summary = guide.querySelector('summary');
+  if (summary) summary.focus();
+}
+
+// aria-expanded do CTA reflete o <details> — inclusive quando o usuário o
+// abre/fecha direto no rodapé.
+function syncSetupGuideCta() {
+  const cta = document.getElementById('setup-guide-cta');
+  const guide = document.getElementById('setup-guide');
+  if (cta && guide) cta.setAttribute('aria-expanded', String(guide.open));
+}
+
+// Mesma convenção do conn-badge: o rótulo guarda a chave em data-i18n para o
+// toggle PT/EN reaplicar o estado atual. Nos estados sem dispositivo virtual
+// (amarelo/vermelho) o badge vira acionável e revela o CTA para o guia; nos
+// demais ele continua um <span> informativo, sem semântica de botão.
 function updateLagunaBadge() {
   const el = document.getElementById('laguna-badge');
   if (!el) return;
   const L = state.devices.laguna || {};
   const T = window.LAGUNA_T || ((k) => k);
+  let key, cls, actionable = false;
   if (state.devicesError) {
-    el.textContent = T('badge.devices_error');
-    el.className = 'badge err';
+    key = 'badge.devices_error';
+    cls = 'err';
   } else if (L.has_laguna_name) {
-    el.textContent = T('badge.laguna_ok');
-    el.className = 'badge ok';
+    key = 'badge.laguna_ok';
+    cls = 'ok';
   } else if (L.virtual_in != null || L.virtual_out != null) {
-    el.textContent = T('badge.laguna_cable');
-    el.className = 'badge warn';
+    key = 'badge.laguna_cable';
+    cls = 'warn';
+    actionable = true;
   } else {
-    el.textContent = T('badge.laguna_none');
-    el.className = 'badge err';
+    key = 'badge.laguna_none';
+    cls = 'err';
+    actionable = true;
+  }
+  const label = el.querySelector('[data-role="laguna-label"]');
+  if (label) {
+    label.setAttribute('data-i18n', key);
+    label.textContent = T(key);
+  }
+  el.className = `badge ${cls}${actionable ? ' is-actionable' : ''}`;
+  const cta = document.getElementById('setup-guide-cta');
+  if (cta) {
+    cta.hidden = !actionable;
+    syncSetupGuideCta();
   }
 }
 
@@ -825,6 +864,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindPanel('escutar');
   const refreshBtn = document.getElementById('refresh-devices');
   if (refreshBtn) refreshBtn.addEventListener('click', refreshDevices);
+  // Um listener no badge cobre o clique no texto e no CTA (bubbling); só age
+  // nos estados acionáveis, marcados por .is-actionable em updateLagunaBadge().
+  const lagunaBadge = document.getElementById('laguna-badge');
+  if (lagunaBadge) {
+    lagunaBadge.addEventListener('click', () => {
+      if (lagunaBadge.classList.contains('is-actionable')) openSetupGuide();
+    });
+  }
+  const setupGuide = document.getElementById('setup-guide');
+  if (setupGuide) setupGuide.addEventListener('toggle', syncSetupGuideCta);
   // WS primeiro e sem await: o badge de conexão precisa refletir o estado real
   // mesmo que a listagem de dispositivos falhe ou demore.
   connectWS();
