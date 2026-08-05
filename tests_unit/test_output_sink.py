@@ -14,6 +14,7 @@ import time
 import numpy as np
 import pytest
 
+import laguna_core
 from laguna_core import (
     OUT_SINK_MAX_ERRORS,
     DirectionConfig,
@@ -301,6 +302,49 @@ def test_falhas_consecutivas_ate_o_teto_viram_erro_terminal_com_o_device():
     fatal = eventos[-1]
     assert not fatal.get("recoverable")  # terminal: agora a saida esta perdida
     assert fatal["args"]["dev"] == 7 and fatal["args"]["max"] == OUT_SINK_MAX_ERRORS
+
+
+def test_depois_do_terminal_o_device_nao_volta_a_ser_recuperavel():
+    """Sem a trava, o zerar-em-sucesso repintaria o painel de VERDE 'rodando'
+    com o Parar ja desabilitado pelo terminal — estado pior que o da #54."""
+    w, eventos = _worker()
+    for n in range(1, OUT_SINK_MAX_ERRORS + 1):
+        w._on_sink_error(7, RuntimeError("fone sumiu"), n)
+    assert eventos[-1]["key"] == "error.play"
+
+    # Frase boa zerou o contador do sink; a falha seguinte chega como 1/3.
+    w._on_sink_error(7, RuntimeError("fone sumiu de novo"), 1)
+    assert len(eventos) == OUT_SINK_MAX_ERRORS  # nenhum evento novo
+    assert not any(e.get("recoverable") for e in eventos[OUT_SINK_MAX_ERRORS - 1 :])
+
+
+def test_terminal_de_um_device_nao_silencia_o_vizinho():
+    w, eventos = _worker()
+    for n in range(1, OUT_SINK_MAX_ERRORS + 1):
+        w._on_sink_error(7, RuntimeError("fone sumiu"), n)
+    w._on_sink_error(8, RuntimeError("soluco"), 1)
+
+    ultimo = eventos[-1]
+    assert ultimo["key"] == "error.output_retry" and ultimo["args"]["dev"] == 8
+    assert ultimo["recoverable"] is True
+
+
+def test_open_sinks_zera_o_veredito_dos_devices_perdidos(monkeypatch):
+    """Direcao reiniciada nao pode herdar device marcado como perdido."""
+    w, eventos = _worker()
+    for n in range(1, OUT_SINK_MAX_ERRORS + 1):
+        w._on_sink_error(7, RuntimeError("fone sumiu"), n)
+
+    # Stream falso: `_open_sinks` nao aceita injecao, entao trocamos o global que
+    # o `_OutputSink` resolve no __init__ — segue sem PortAudio/device real.
+    monkeypatch.setattr(laguna_core, "_open_output_stream", _factory({}))
+    w.cfg.output_devices = [7]
+    w._open_sinks(SR)
+    try:
+        w._on_sink_error(7, RuntimeError("soluco novo"), 1)
+    finally:
+        w._close_sinks()
+    assert eventos[-1]["key"] == "error.output_retry"
 
 
 def test_frase_tocada_zera_o_orcamento_do_device():

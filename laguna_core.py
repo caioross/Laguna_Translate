@@ -340,6 +340,10 @@ class DirectionWorker:
         self._last_xrun_log = float("-inf")  # throttle de log de xrun
         self._drops = DropCounter()  # descartes de fila sob sobrecarga
         self._sinks: list[_OutputSink] = []  # saidas da traducao (abertas em _run)
+        # Devices de saida ja declarados PERDIDOS (terminal `error.play` emitido).
+        # So a thread de cada sink escreve, e cada uma escreve a propria chave —
+        # `set.add`/`in` de builtin bastam, sem lock no caminho de erro.
+        self._sinks_perdidos: set[int] = set()
         # volume control (linear factors; atualizados via setters threadsafe)
         self._out_gain = 10.0 ** (float(cfg.output_gain_db) / 20.0)
         self._pt_gain = 10.0 ** (float(cfg.passthrough_gain_db) / 20.0)
@@ -947,6 +951,7 @@ class DirectionWorker:
             # Stop chegou durante o warmup (carga de modelo estoura o join de 2s
             # do stop()): nao adianta abrir device para fechar no finally.
             return
+        self._sinks_perdidos.clear()  # sinks novos, orcamento e veredito zerados
         self._sinks = [
             _OutputSink(dev, samplerate, self._on_sink_error)
             for dev in self.cfg.output_devices
@@ -973,8 +978,20 @@ class DirectionWorker:
         `kind:"status"` novo porque status pinta o painel de VERDE ("rodando")
         com um texto de falha e nao volta sozinho; o caminho recuperavel ja existe
         na UI, entao nenhuma linha de `app.js` precisa mudar para isto funcionar.
+
+        O veredito terminal e SEM VOLTA para aquele device (`_sinks_perdidos`).
+        Sem essa trava, o zerar-em-sucesso abriria um estado que nao existia antes
+        desta issue: depois do `error.play` a UI ja derrubou os botoes
+        (`app.js`: `toggleButtons(false)` + `running.delete`), e uma frase boa
+        seguida de nova falha voltaria como `recoverable` — o painel repintaria
+        VERDE "Rodando" com o Parar desabilitado. Um device que ja custou
+        `OUT_SINK_MAX_ERRORS` frases seguidas nao volta a ser soluco; tambem evita
+        re-emitir o terminal a cada frase.
         """
+        if dev in self._sinks_perdidos:
+            return
         if consecutivas >= OUT_SINK_MAX_ERRORS:
+            self._sinks_perdidos.add(dev)
             self._emit_key(
                 "error",
                 "error.play",
