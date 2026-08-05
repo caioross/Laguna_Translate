@@ -19,15 +19,11 @@ import sounddevice as sd
 
 from laguna_pipeline import (
     ArgosMT,
-    MAX_SEGMENT_MS,
-    MIN_SPEECH_MS,
-    PRE_SPEECH_BUFFER_MS,
     PiperTTS,
     SAMPLE_RATE,
-    SILENCE_HANGOVER_MS,
     STT,
-    VAD_FRAME_MS,
     VAD_FRAME_SAMPLES,
+    VADSegmenter,
     WebRTCVADGate,
     detect_device,
     log,
@@ -59,6 +55,196 @@ CAPTURE_BACKOFF_S = 0.5       # base do backoff (cresce por tentativa)
 CAPTURE_MAX_BACKOFF_S = 3.0   # teto do backoff entre tentativas
 CAPTURE_STALL_S = 3.0         # so mic: sem callbacks por mais que isso = captura morta
 CAPTURE_HEALTHY_S = 5.0       # sessao que durou isso reseta o orcamento de retries
+
+# Resiliencia do laco de traducao (issue #45): uma excecao processando UMA frase
+# (Piper engasgando num texto esquisito do Argos, hiccup de CUDA) nao pode
+# encerrar a direcao pelo resto da sessao. Falha isolada emite erro recuperavel e
+# o laco segue para o proximo segmento; so falhas CONSECUTIVAS (o engine morreu
+# de verdade) sao fatais. Uma frase boa zera o contador — mesma doutrina do
+# orcamento de retries da captura (CAPTURE_MAX_RETRIES/CAPTURE_HEALTHY_S). Numero
+# de robustez, nao de latencia: o caminho feliz nunca toca este contador.
+SEGMENT_MAX_FAILURES = 3      # falhas consecutivas de segmento antes do fatal
+
+# Reproducao da traducao (issue #38): um _OutputSink por device de saida, com
+# stream proprio (aberto uma vez e reusado) e thread propria, de modo que as
+# saidas toquem em PARALELO. O laco de traducao ficava bloqueado N x duracao-da-
+# frase (fone so comecava quando o CABLE terminava) porque `sd.play(blocking=
+# True)` roda em serie por device. `sd.play()` tambem nao serve para paralelizar
+# com threads: ele opera sobre um stream global do modulo sounddevice — duas
+# chamadas concorrentes se cancelam — e reabre o stream a cada frase (dezenas de
+# ms no WASAPI, em cima do alvo de p50 ~450ms).
+OUT_SINK_JOIN_S = 2.0         # espera maxima pela thread do sink ao fechar
+OUT_SINK_WAIT_MARGIN_S = 2.0  # folga sobre a duracao da frase ao esperar o sink
+OUT_SINK_POLL_S = 0.2         # granularidade do stop na thread do sink
+
+# Robustez da saida (issue #54): o sink ja se recupera sozinho de uma falha — o
+# stream cai, a frase seguinte reabre — mas o relato para fora era terminal, e a
+# UI marcava a direcao inteira como parada (com o Stop desabilitado) por causa de
+# um soluco de driver, com o worker ainda traduzindo. Mesma doutrina do orcamento
+# de retries da captura (CAPTURE_MAX_RETRIES) e das frases (SEGMENT_MAX_FAILURES):
+# falha isolada e recuperavel, so falhas CONSECUTIVAS no MESMO device sao fatais.
+# 3 (e nao os 5 da captura) porque aqui cada falha ja custou uma frase muda naquele
+# device — o usuario precisa saber cedo. Numero de robustez, nao de latencia: o
+# caminho feliz nunca toca este contador.
+OUT_SINK_MAX_ERRORS = 3       # falhas consecutivas por device antes do fatal
+
+
+def _open_output_stream(device: int, samplerate: int):
+    """Abre e inicia o OutputStream mono de um device de saida.
+
+    Isolado em funcao para que os testes injetem um stream falso (`_OutputSink`
+    recebe `open_stream`) sem tocar PortAudio. Mono/float32 espelha o que o
+    `sd.play()` anterior fazia com o PCM 1-D do Piper.
+    """
+    stream = sd.OutputStream(
+        device=device,
+        samplerate=samplerate,
+        channels=1,
+        dtype="float32",
+    )
+    stream.start()
+    return stream
+
+
+class _OutputSink:
+    """Reproduz frases traduzidas num device de saida, em thread propria.
+
+    `submit()` nunca bloqueia: enfileira a frase (fila de 1) e volta na hora, de
+    modo que o chamador alimente todos os devices praticamente ao mesmo tempo.
+    `wait()` espera a frase terminar — o laco de traducao espera todos os sinks
+    uma vez so, ficando bloqueado ~1 frase, nao N.
+
+    Falha de device e local: a excecao fecha so este stream (a proxima frase
+    reabre) e vai para `on_error(device, exc, consecutivas)`; os outros sinks
+    seguem tocando. O contador de falhas CONSECUTIVAS vive aqui (issue #54) —
+    e este objeto que sabe se o `write()` deu certo, e um contador por sink ja
+    e um contador por device: a falha de um nunca contamina o do outro. Quem
+    decide se `consecutivas` ja e fatal e o worker (`_on_sink_error`).
+    """
+
+    def __init__(
+        self,
+        device: int,
+        samplerate: int,
+        on_error: Callable[[int, Exception, int], None],
+        open_stream: Optional[Callable[[int, int], object]] = None,
+    ) -> None:
+        self.device = int(device)
+        self.samplerate = int(samplerate)
+        self._on_error = on_error
+        self._erros = 0  # falhas consecutivas; so a thread do sink toca
+        self._open_stream = open_stream or _open_output_stream
+        self._q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1)
+        self._done = threading.Event()
+        self._done.set()  # ocioso ate a 1a frase
+        self._stop = threading.Event()
+        self._lock = threading.Lock()  # protege self._stream entre as threads
+        self._stream: Optional[object] = None
+        self._logou_descarte = False  # log de frase descartada: so o 1o
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name=f"laguna-out-{self.device}"
+        )
+        self._thread.start()
+
+    def submit(self, pcm: np.ndarray) -> None:
+        """Enfileira uma frase e retorna imediatamente."""
+        self._done.clear()
+        try:
+            self._q.put_nowait(pcm)
+        except queue.Full:
+            # Sink ainda ocupado com a frase anterior (device lento/travado):
+            # descarta so nele, sem segurar os demais. Loga uma vez para o
+            # descarte nao ser invisivel — contabilizar no DropCounter/`overload`
+            # exige um terceiro `kind` e muda o payload do evento, entao fica
+            # como fatia propria (issue #38).
+            if not self._logou_descarte:
+                self._logou_descarte = True
+                log(f"saida dev={self.device}: device atrasado, frase descartada")
+            self._done.set()
+
+    def wait(self, timeout: float) -> bool:
+        """Espera a frase atual terminar. False = estourou o timeout."""
+        return self._done.wait(timeout)
+
+    def close(self) -> None:
+        """Aborta o que estiver tocando, encerra a thread e fecha o stream."""
+        self._stop.set()
+        with self._lock:
+            stream = self._stream
+        if stream is not None:
+            try:
+                stream.abort()  # desbloqueia um write() em andamento
+            except Exception:
+                pass
+        self._thread.join(timeout=OUT_SINK_JOIN_S)
+        self._close_stream()
+
+    # --- interno (thread do sink) -------------------------------------------
+    def _run(self) -> None:
+        # Abre ja no start: a 1a frase nao paga a abertura e um device invalido
+        # vira erro antes de alguem falar.
+        try:
+            self._ensure_stream()
+        except Exception as e:
+            self._close_stream()
+            self._report(e)
+
+        while not self._stop.is_set():
+            try:
+                pcm = self._q.get(timeout=OUT_SINK_POLL_S)
+            except queue.Empty:
+                continue
+            try:
+                if not self._stop.is_set():
+                    self._ensure_stream().write(np.ascontiguousarray(pcm, dtype=np.float32))
+            except Exception as e:
+                self._close_stream()  # forca reabertura na proxima frase
+                self._report(e)
+            else:
+                # Frase tocada: o device esta vivo de novo. Zera o orcamento para
+                # que falhas ESPACADAS ao longo de uma call (um soluco por hora)
+                # nunca somem ate o teto e matem a direcao (issue #54).
+                self._erros = 0
+            finally:
+                self._done.set()
+
+    def _report(self, exc: Exception) -> None:
+        """Emite falha de device — exceto quando a falha E o proprio shutdown.
+
+        `close()` chama `stream.abort()` justamente para desbloquear um `write()`
+        em andamento, e o PortAudio faz esse write falhar. Sem este guarda, todo
+        Stop (ou troca de config, que faz `laguna_server` parar o worker antigo)
+        com uma frase tocando acendia `error.play` na UI — e `static/app.js`
+        trata erro como terminal, deixando o painel travado. Parar nao e erro.
+
+        O contador so anda em falha REPORTADA: o write abortado pelo Stop nao
+        conta, senao o shutdown envenenaria o orcamento de um sink que sequer
+        vai sobreviver a ele.
+        """
+        if self._stop.is_set():
+            return
+        self._erros += 1
+        self._on_error(self.device, exc, self._erros)
+
+    def _ensure_stream(self):
+        with self._lock:
+            if self._stream is None:
+                self._stream = self._open_stream(self.device, self.samplerate)
+            return self._stream
+
+    def _close_stream(self) -> None:
+        with self._lock:
+            stream, self._stream = self._stream, None
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
 
 
 @dataclass
@@ -153,6 +339,11 @@ class DirectionWorker:
         self._last_cb = 0.0  # ultimo callback de captura (watchdog de estagnacao)
         self._last_xrun_log = float("-inf")  # throttle de log de xrun
         self._drops = DropCounter()  # descartes de fila sob sobrecarga
+        self._sinks: list[_OutputSink] = []  # saidas da traducao (abertas em _run)
+        # Devices de saida ja declarados PERDIDOS (terminal `error.play` emitido).
+        # So a thread de cada sink escreve, e cada uma escreve a propria chave —
+        # `set.add`/`in` de builtin bastam, sem lock no caminho de erro.
+        self._sinks_perdidos: set[int] = set()
         # volume control (linear factors; atualizados via setters threadsafe)
         self._out_gain = 10.0 ** (float(cfg.output_gain_db) / 20.0)
         self._pt_gain = 10.0 ** (float(cfg.passthrough_gain_db) / 20.0)
@@ -174,6 +365,9 @@ class DirectionWorker:
 
     def stop(self) -> None:
         self._stop.set()
+        # Libera os devices de saida na hora: o servidor recria o worker logo em
+        # seguida ao trocar de config, e o stream fica aberto mesmo em silencio.
+        self._close_sinks()
         for t in self._threads:
             t.join(timeout=2)
 
@@ -189,15 +383,17 @@ class DirectionWorker:
         key: str,
         args: Optional[dict] = None,
         msg: Optional[str] = None,
+        **data,
     ) -> None:
         """Emite evento com chave i18n + args para o cliente resolver.
 
         `msg` e o fallback em portugues (usado se o cliente nao tem a chave
-        ou em logs de console).
+        ou em logs de console). `**data` vai direto no payload do evento, para
+        campos que a UI le sem traduzir (ex.: `recoverable`, issue #45).
         """
         args = args or {}
         fallback = msg if msg is not None else key
-        self._emit(kind, key=key, args=args, msg=fallback)
+        self._emit(kind, key=key, args=args, msg=fallback, **data)
 
     def _run(self) -> None:
         try:
@@ -222,6 +418,8 @@ class DirectionWorker:
             _ = mt.translate("olá" if self.cfg.src_lang == "pt" else "hello")
             _ = tts.synthesize("warm up")
 
+            self._open_sinks(tts.sample_rate)
+
             vad = WebRTCVADGate(aggressiveness=2)
             audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=400)
             seg_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=4)
@@ -240,49 +438,116 @@ class DirectionWorker:
             self._emit_key("status", "status.listening", msg="Ouvindo")
             self._emit("ready")
 
-            while not self._stop.is_set():
-                try:
-                    seg = seg_q.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-
-                t0 = time.perf_counter()
-                if self.cfg.skip_same_lang:
-                    text, detected = stt.transcribe_with_lang(seg)
-                else:
-                    text = stt.transcribe(seg)
-                    detected = self.cfg.src_lang
-                t_stt = (time.perf_counter() - t0) * 1000
-                if not text.strip():
-                    continue
-
-                self._emit("stt", text=text, lang=detected, ms=round(t_stt))
-
-                if self.cfg.skip_same_lang and detected == self.cfg.tgt_lang:
-                    self._emit("skipped", reason=f"detected={detected} == tgt; sem traducao")
-                    self._lat_stt.append(t_stt)
-                    self._push_latency()
-                    continue
-
-                t0 = time.perf_counter()
-                translated = mt.translate(text)
-                t_mt = (time.perf_counter() - t0) * 1000
-                self._emit("mt", text=translated, ms=round(t_mt))
-
-                t0 = time.perf_counter()
-                audio_out = tts.synthesize(translated)
-                t_tts = (time.perf_counter() - t0) * 1000
-
-                total = t_stt + t_mt + t_tts
-                self._lat_stt.append(t_stt)
-                self._lat_mt.append(t_mt)
-                self._lat_tts.append(t_tts)
-                self._lat_total.append(total)
-                self._push_latency()
-
-                self._play(audio_out, tts.sample_rate)
+            self._translation_loop(seg_q, stt, mt, tts)
         except Exception as e:
+            # Falha de SETUP (modelo que nao carrega, warmup) segue matando a
+            # direcao na hora: "sem modelo" nao vira retry infinito. O laco de
+            # traducao trata as proprias falhas em _translation_loop.
             self._emit("error", msg=f"{type(e).__name__}: {e}")
+        finally:
+            # Fecha streams de saida e junta as threads dos sinks: parar/reiniciar
+            # a direcao varias vezes nao pode vazar device (issue #38).
+            self._close_sinks()
+
+    def _translation_loop(self, seg_q: "queue.Queue[np.ndarray]", stt, mt, tts) -> None:
+        """Consome segmentos ate o stop — sobrevivendo a falha de UMA frase.
+
+        Antes (issue #45) o laco inteiro vivia sob o mesmo `try` do setup: uma
+        excecao em qualquer engine encerrava a direcao pelo resto da sessao,
+        deixando `_capture`/`_segmenter` rodando (o `_stop` nunca era setado) e o
+        app "vivo" sem traduzir. Aqui a falha e por frase: emite erro recuperavel
+        e segue. So `SEGMENT_MAX_FAILURES` falhas CONSECUTIVAS sao fatais — e
+        nesse caso o `_stop` e setado ANTES de sair, para nao deixar thread
+        zumbi segurando o device de captura e enchendo fila.
+        """
+        fails = 0  # falhas consecutivas; uma frase boa zera
+        while not self._stop.is_set():
+            try:
+                seg = seg_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            try:
+                self._process_segment(seg, stt, mt, tts)
+            except Exception as e:
+                if self._stop.is_set():
+                    return  # parar no meio de uma frase nao e falha
+                fails += 1
+                detail = f"{type(e).__name__}: {e}"
+                log(
+                    f"[{self.cfg.name}] falha ao processar segmento "
+                    f"({fails}/{SEGMENT_MAX_FAILURES}): {detail}"
+                )
+                if fails >= SEGMENT_MAX_FAILURES:
+                    # Fatal: encerra a direcao de verdade. `_stop` primeiro, para
+                    # que captura e segmentador saiam junto com este laco.
+                    self._stop.set()
+                    self._emit_key(
+                        "error",
+                        "error.direction_lost",
+                        {"max": SEGMENT_MAX_FAILURES, "detail": detail},
+                        msg=(
+                            f"Direcao encerrada: {SEGMENT_MAX_FAILURES} frases seguidas "
+                            f"falharam. ({detail})"
+                        ),
+                    )
+                    return
+                # Recuperavel: a UI mostra o aviso mas NAO derruba os botoes —
+                # a direcao continua traduzindo a proxima frase.
+                self._emit_key(
+                    "error",
+                    "error.segment_failed",
+                    {"attempt": fails, "max": SEGMENT_MAX_FAILURES, "detail": detail},
+                    msg=f"Frase perdida ({fails}/{SEGMENT_MAX_FAILURES}): {detail}",
+                    recoverable=True,
+                )
+            else:
+                fails = 0
+
+    def _process_segment(self, seg: np.ndarray, stt, mt, tts) -> None:
+        """Traduz UM segmento: STT -> MT -> TTS -> reproducao nos sinks.
+
+        Extraido do laco (issue #45) para que a falha de uma frase seja isolavel
+        num `try` proprio e para que o caminho quente seja testavel com dubles,
+        sem sounddevice, modelo ou GPU. Excecao aqui sobe para o chamador — as
+        latencias so entram em `_lat_*` no fim, entao segmento que falhou nao
+        polui a metrica (a metrica nao pode mentir por omissao, cf. issue #21).
+        """
+        t0 = time.perf_counter()
+        if self.cfg.skip_same_lang:
+            text, detected = stt.transcribe_with_lang(seg)
+        else:
+            text = stt.transcribe(seg)
+            detected = self.cfg.src_lang
+        t_stt = (time.perf_counter() - t0) * 1000
+        if not text.strip():
+            return
+
+        self._emit("stt", text=text, lang=detected, ms=round(t_stt))
+
+        if self.cfg.skip_same_lang and detected == self.cfg.tgt_lang:
+            self._emit("skipped", reason=f"detected={detected} == tgt; sem traducao")
+            self._lat_stt.append(t_stt)
+            self._push_latency()
+            return
+
+        t0 = time.perf_counter()
+        translated = mt.translate(text)
+        t_mt = (time.perf_counter() - t0) * 1000
+        self._emit("mt", text=translated, ms=round(t_mt))
+
+        t0 = time.perf_counter()
+        audio_out = tts.synthesize(translated)
+        t_tts = (time.perf_counter() - t0) * 1000
+
+        total = t_stt + t_mt + t_tts
+        self._lat_stt.append(t_stt)
+        self._lat_mt.append(t_mt)
+        self._lat_tts.append(t_tts)
+        self._lat_total.append(total)
+        self._push_latency()
+
+        self._play(audio_out, tts.sample_rate)
 
     def _update_level(self, kind: str, arr: np.ndarray) -> None:
         """Atualiza medidor de nivel (in/out) com EMA + emite throttled (10Hz)."""
@@ -653,15 +918,13 @@ class DirectionWorker:
         seg_q: "queue.Queue[np.ndarray]",
         vad: WebRTCVADGate,
     ) -> None:
-        pre_max = PRE_SPEECH_BUFFER_MS // VAD_FRAME_MS
-        silence_max = SILENCE_HANGOVER_MS // VAD_FRAME_MS
-        min_speech = MIN_SPEECH_MS // VAD_FRAME_MS
-        max_frames = MAX_SEGMENT_MS // VAD_FRAME_MS
-
-        pre_buf: deque[np.ndarray] = deque(maxlen=pre_max)
-        speaking: list[np.ndarray] = []
-        silence_run = 0
-        in_speech = False
+        # A politica de segmentacao (pre-buffer / hangover / min-max) vive em
+        # VADSegmenter (laguna_pipeline), a mesma classe coberta por
+        # tests_unit/test_vad_segmenter.py e usada pela CLI (fase0_poc). Aqui a
+        # thread cuida so de queues, do fatiamento em frames de VAD_FRAME_SAMPLES
+        # e do `leftover` — a captura entrega blocos de tamanho arbitrario e
+        # `VADSegmenter.push` assume frame ja alinhado (issue #44).
+        segmenter = VADSegmenter()
         leftover = np.zeros(0, dtype=np.float32)
 
         while not self._stop.is_set():
@@ -674,45 +937,100 @@ class DirectionWorker:
             while i + VAD_FRAME_SAMPLES <= len(buf):
                 frame = buf[i : i + VAD_FRAME_SAMPLES]
                 i += VAD_FRAME_SAMPLES
-                is_speech = vad.is_speech(frame)
-                if not in_speech:
-                    pre_buf.append(frame)
-                    if is_speech:
-                        in_speech = True
-                        speaking = list(pre_buf)
-                        pre_buf.clear()
-                        silence_run = 0
-                else:
-                    speaking.append(frame)
-                    silence_run = 0 if is_speech else silence_run + 1
-                    force_flush = len(speaking) >= max_frames
-                    if silence_run >= silence_max or force_flush:
-                        if len(speaking) >= min_speech:
-                            seg = np.concatenate(speaking)
-                            try:
-                                seg_q.put_nowait(seg)
-                            except queue.Full:
-                                self._on_drop("segment")
-                        in_speech = False
-                        speaking = []
-                        silence_run = 0
+                seg = segmenter.push(frame, vad.is_speech(frame))
+                if seg is not None:
+                    try:
+                        seg_q.put_nowait(seg)
+                    except queue.Full:
+                        self._on_drop("segment")
             leftover = buf[i:] if i < len(buf) else np.zeros(0, dtype=np.float32)
 
+    def _open_sinks(self, samplerate: int) -> None:
+        """Cria um sink por device de saida (sample rate fixo = o do Piper)."""
+        if self._stop.is_set():
+            # Stop chegou durante o warmup (carga de modelo estoura o join de 2s
+            # do stop()): nao adianta abrir device para fechar no finally.
+            return
+        self._sinks_perdidos.clear()  # sinks novos, orcamento e veredito zerados
+        self._sinks = [
+            _OutputSink(dev, samplerate, self._on_sink_error)
+            for dev in self.cfg.output_devices
+        ]
+
+    def _close_sinks(self) -> None:
+        sinks, self._sinks = self._sinks, []
+        for sink in sinks:
+            sink.close()
+
+    def _on_sink_error(self, dev: int, exc: Exception, consecutivas: int) -> None:
+        """Decide se a falha de UM device de saida e soluco ou perda definitiva.
+
+        Antes, toda falha virava `error.play` — e `static/app.js` trata erro
+        nao-recuperavel como fim de sessao (status 'error', `running.delete`,
+        `toggleButtons(false)`). Resultado: um fone entrando em power save
+        desabilitava o Stop com o worker ainda capturando e mandando audio pro
+        Discord, e a unica saida era recarregar a pagina (issue #54).
+
+        O degrau e o mesmo do laco de traducao (issue #45): falha isolada e
+        `recoverable=True` — aviso ambar transitorio, a direcao segue rodando e o
+        Stop segue habilitado — e so `OUT_SINK_MAX_ERRORS` falhas CONSECUTIVAS no
+        mesmo device viram o terminal `error.play`. Preferimos `recoverable` a um
+        `kind:"status"` novo porque status pinta o painel de VERDE ("rodando")
+        com um texto de falha e nao volta sozinho; o caminho recuperavel ja existe
+        na UI, entao nenhuma linha de `app.js` precisa mudar para isto funcionar.
+
+        O veredito terminal e SEM VOLTA para aquele device (`_sinks_perdidos`).
+        Sem essa trava, o zerar-em-sucesso abriria um estado que nao existia antes
+        desta issue: depois do `error.play` a UI ja derrubou os botoes
+        (`app.js`: `toggleButtons(false)` + `running.delete`), e uma frase boa
+        seguida de nova falha voltaria como `recoverable` — o painel repintaria
+        VERDE "Rodando" com o Parar desabilitado. Um device que ja custou
+        `OUT_SINK_MAX_ERRORS` frases seguidas nao volta a ser soluco; tambem evita
+        re-emitir o terminal a cada frase.
+        """
+        if dev in self._sinks_perdidos:
+            return
+        if consecutivas >= OUT_SINK_MAX_ERRORS:
+            self._sinks_perdidos.add(dev)
+            self._emit_key(
+                "error",
+                "error.play",
+                {"dev": dev, "max": OUT_SINK_MAX_ERRORS, "detail": str(exc)},
+                msg=(
+                    f"Saida perdida (dev={dev}): {OUT_SINK_MAX_ERRORS} frases "
+                    f"seguidas falharam. ({exc})"
+                ),
+            )
+            return
+        self._emit_key(
+            "error",
+            "error.output_retry",
+            {
+                "dev": dev,
+                "attempt": consecutivas,
+                "max": OUT_SINK_MAX_ERRORS,
+                "detail": str(exc),
+            },
+            msg=f"Saida falhou (dev={dev}) {consecutivas}/{OUT_SINK_MAX_ERRORS}: {exc}",
+            recoverable=True,
+        )
+
     def _play(self, pcm: np.ndarray, sr: int) -> None:
-        if len(pcm) == 0 or not self.cfg.output_devices:
+        # Lista fixada numa local: um _close_sinks() concorrente (stop) nao pode
+        # fazer o laco de espera enxergar um conjunto diferente do que submeteu.
+        sinks = self._sinks
+        if len(pcm) == 0 or not sinks or self._stop.is_set():
             return
         gain = self._out_gain
         if gain != 1.0:
             pcm = np.clip(pcm.astype(np.float32, copy=False) * gain, -1.0, 1.0)
-        self._update_level("out", pcm)
-        for dev in self.cfg.output_devices:
-            try:
-                sd.play(pcm, samplerate=sr, device=dev, blocking=True)
-            except Exception as e:
-                self._emit_key(
-                    "error",
-                    "error.play",
-                    {"dev": dev, "detail": str(e)},
-                    msg=f"play(dev={dev}): {e}",
-                )
+        self._update_level("out", pcm)  # medidor: 1x por frase, nao 1x por device
+        for sink in sinks:
+            sink.submit(pcm)
+        # As saidas tocam em paralelo: espera-se uma frase (a mais lenta), nao N.
+        # O deadline unico evita que um device travado multiplique a espera; sem
+        # ele o laco poderia ficar parado N x timeout.
+        deadline = time.perf_counter() + len(pcm) / float(sr) + OUT_SINK_WAIT_MARGIN_S
+        for sink in sinks:
+            sink.wait(max(0.0, deadline - time.perf_counter()))
 

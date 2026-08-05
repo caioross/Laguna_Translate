@@ -10,8 +10,11 @@ pré-buffer=10, hangover=20, mín=13, máx=400. Os testes recomputam esses limia
 a partir das constantes importadas — se as constantes mudarem, os testes seguem.
 """
 
+import inspect
+
 import numpy as np
 
+import laguna_core
 from laguna_pipeline import (
     MAX_SEGMENT_MS,
     MIN_SPEECH_MS,
@@ -147,3 +150,38 @@ def test_segmento_curto_e_descartado():
     descartado = _drive(alto, script)
     assert descartado == []  # fecha, mas < min_speech → descartado (retorna None)
     assert alto.in_speech is False  # e o estado volta a repouso após o descarte
+
+
+# --- (f) é ESTA classe que o app real executa (issue #44) -------------------
+#
+# Os testes acima só valem alguma coisa se `DirectionWorker._segmenter` — o
+# segmentador da UI web e da janela nativa — delegar a política a `VADSegmenter`
+# em vez de manter uma cópia inline. A cópia era equivalente linha a linha, o que
+# é o pior estado possível: verde na suíte, drift silencioso no produto. Estes
+# dois testes travam a delegação para que o próximo refactor não a desfaça em
+# silêncio.
+
+_POLICY_NAMES = (
+    "PRE_SPEECH_BUFFER_MS",
+    "SILENCE_HANGOVER_MS",
+    "MIN_SPEECH_MS",
+    "MAX_SEGMENT_MS",
+    "pre_buf",
+    "silence_run",
+    "in_speech",
+)
+
+
+def test_direction_worker_delega_a_vad_segmenter():
+    src = inspect.getsource(laguna_core.DirectionWorker._segmenter)
+    assert "VADSegmenter()" in src, "_segmenter não instancia a máquina de estados testada"
+    assert laguna_core.VADSegmenter is VADSegmenter  # a mesma classe, não um homônimo
+
+
+def test_laguna_core_nao_reimplementa_a_politica_de_vad():
+    src = inspect.getsource(laguna_core.DirectionWorker._segmenter)
+    duplicados = [n for n in _POLICY_NAMES if n in src]
+    assert duplicados == [], f"política de VAD duplicada em laguna_core._segmenter: {duplicados}"
+    # E os limiares não voltam pela porta do import (só VADSegmenter os deriva).
+    reimportados = [n for n in _POLICY_NAMES[:4] if hasattr(laguna_core, n)]
+    assert reimportados == [], f"laguna_core reimporta limiares de VAD: {reimportados}"

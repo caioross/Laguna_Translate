@@ -28,8 +28,9 @@ sys.modules["sounddevice"] = _sd_stub
 
 # Stub de uvicorn + fastapi: alguns testes de lógica pura importam
 # `laguna_server` (para exercitar `validate_direction_config`), mas nunca sobem
-# o servidor HTTP. O job "lógica pura" da CI instala só `pytest numpy` — fastapi
-# e uvicorn não estão nele (nem em requirements.txt). Cobrimos só o que
+# o servidor HTTP. fastapi e uvicorn são deps declaradas do app, mas o job
+# "lógica pura" da CI instala só `pytest numpy` — nenhum dos dois está lá, e
+# não devem passar a estar (o job é rápido de propósito). Cobrimos só o que
 # `laguna_server` toca no import: `FastAPI(...)`, os decorators `@app.get/post/
 # websocket`, `app.mount`, `StaticFiles`, `JSONResponse` e `WebSocket*`. Hermético
 # (mesmo se o real estiver instalado), como o stub de sounddevice acima — estes

@@ -312,8 +312,8 @@ C:/Python313/python.exe -m pip install -r requirements.txt
 # Para GPU (opcional — skip se só for rodar em CPU)
 C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 
-# Para launcher .exe-like com janela nativa (opcional)
-C:/Python313/python.exe -m pip install pywebview fastapi uvicorn
+# Para janela nativa em vez do navegador (opcional — sem ele, laguna_app.py cai no navegador padrão)
+C:/Python313/python.exe -m pip install pywebview
 ```
 
 > Para uma instalação **reproduzível** com as versões exatas comprovadas, use o `requirements.lock` no lugar do `requirements.txt`: `C:/Python313/python.exe -m pip install -r requirements.lock`.
@@ -485,6 +485,16 @@ Cada painel tem:
 
 <a id="pt-problemas"></a>
 ## 🧯 Solução de problemas
+
+<details>
+<summary><b>Duplo-clique no atalho e "não acontece nada"</b></summary>
+
+O atalho roda `pythonw` (sem console), então o erro não aparece na tela sozinho — mas ele **fica gravado**. Abra o `laguna.log` na pasta do projeto: as últimas linhas trazem a data/hora do start e o traceback completo da falha. A partir de agora, falha fatal também mostra uma caixa de mensagem do Windows com o motivo — inclusive quando falta uma dependência (a caixa mostra o `pip install -r requirements.txt` a rodar).
+
+Se a porta **7531** já estiver ocupada:
+- por outra instância do Laguna → o atalho só abre o navegador na instância que já está rodando (não sobe um segundo servidor);
+- por outro programa → o Laguna avisa, registra no `laguna.log` e **não** abre o navegador. Feche o programa que usa a porta e tente de novo.
+</details>
 
 <details>
 <summary><b>CUDA não é detectada / cai pra CPU mesmo com GPU NVIDIA</b></summary>
@@ -861,8 +871,8 @@ C:/Python313/python.exe -m pip install -r requirements.txt
 # For GPU (optional — skip if running on CPU only)
 C:/Python313/python.exe -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 
-# For the .exe-like launcher with a native window (optional)
-C:/Python313/python.exe -m pip install pywebview fastapi uvicorn
+# For a native window instead of the browser (optional — without it, laguna_app.py falls back to the default browser)
+C:/Python313/python.exe -m pip install pywebview
 ```
 
 > For a **reproducible** install with the exact proven versions, use `requirements.lock` instead of `requirements.txt`: `C:/Python313/python.exe -m pip install -r requirements.lock`.
@@ -918,6 +928,16 @@ Each panel has language selection, device selection (mic/loopback, virtual outpu
 
 <a id="en-troubleshooting"></a>
 ## 🧯 Troubleshooting
+
+<details>
+<summary><b>Double-clicking the shortcut does nothing</b></summary>
+
+The shortcut runs `pythonw` (no console), so errors can't surface on their own — but they are **written down**. Open `laguna.log` in the project folder: it holds the start timestamp and the full traceback. A fatal failure now also pops a Windows message box with the reason — including a missing dependency, where the box tells you to run `pip install -r requirements.txt`.
+
+If port **7531** is already taken:
+- by another Laguna instance → the shortcut just opens the browser on the running one (no second server);
+- by a different program → Laguna warns, logs it and does **not** open the browser. Close the program using the port and try again.
+</details>
 
 <details>
 <summary><b>CUDA not detected / falls back to CPU even with an NVIDIA GPU</b></summary>

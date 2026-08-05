@@ -6,18 +6,43 @@ const API = {
     if (!r.ok) throw new Error(`/api/devices HTTP ${r.status}`);
     return r.json();
   }),
-  start: (dir, cfg) => fetch(`/api/start/${dir}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(cfg)
-  }).then(r => r.json()),
-  stop: (dir) => fetch(`/api/stop/${dir}`, {method: 'POST'}).then(r => r.json()),
-  gain: (dir, body) => fetch(`/api/gain/${dir}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  }).then(r => r.json()).catch(() => null),
+  start: (dir, cfg) => postJSON(`/api/start/${dir}`, cfg),
+  stop: (dir) => postJSON(`/api/stop/${dir}`),
+  gain: (dir, body) => postJSON(`/api/gain/${dir}`, body),
 };
+
+// Erro sintetico no MESMO formato do 400 do backend, para resolveEvent() render.
+function requestFailed(detail) {
+  return {
+    error_key: 'error.request_failed',
+    args: {detail},
+    error: `falha de requisicao: ${detail}`,
+  };
+}
+
+// POST JSON que NUNCA lanca: devolve {ok, data}. Cobre os tres casos que faltavam
+// tratamento (#50): servidor fora do ar (fetch rejeita), HTTP nao-OK sem contrato
+// de erro (ex.: 500 {"detail": ...}) e corpo nao-JSON. Quando o backend devolve o
+// 400 previsto, `data` passa intacto com error_key/args/error.
+async function postJSON(url, body) {
+  let r;
+  try {
+    r = await fetch(url, body === undefined ? {method: 'POST'} : {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return {ok: false, data: requestFailed(err && err.message ? err.message : String(err))};
+  }
+  const data = await r.json().catch(() => null);
+  if (r.ok) return {ok: true, data: data || {}};
+  if (data && (data.error_key || data.error)) return {ok: false, data};
+  const detail = data && typeof data.detail === 'string'
+    ? `HTTP ${r.status}: ${data.detail}`
+    : `HTTP ${r.status}`;
+  return {ok: false, data: requestFailed(detail)};
+}
 
 const state = {
   devices: {inputs: [], outputs: [], loopbacks: [], laguna: {}},
@@ -25,6 +50,9 @@ const state = {
   // (inclusive ao trocar de idioma, que re-renderiza via updateLagunaBadge()).
   devicesError: false,
   running: new Set(),
+  // nomes de devices salvos que sumiram da enumeracao, por direcao (#53) —
+  // guardados para re-renderizar o aviso ao trocar o idioma da UI.
+  missingDevices: {falar: [], escutar: []},
 };
 
 const LS_PREFIX = 'laguna';
@@ -65,6 +93,14 @@ const PERSIST_FIELDS = {
   ],
 };
 
+// Selects cujo valor e um indice do PortAudio — identidade instavel (#53).
+// Para estes persistimos tambem {name, hostapi}, que sao estaveis, e resolvemos
+// o indice ATUAL na restauracao. O que vai para /api/start continua sendo o int.
+const DEVICE_ROLES = new Set(['capture_device', 'virtual_out', 'fone_device']);
+// Campo extra no JSON do localStorage: {role: {index, name, hostapi}}. Prefixo
+// `_` para nao colidir com os roles de PERSIST_FIELDS.
+const LS_DEVICES_FIELD = '_devices';
+
 function $all(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
 function $(sel, root = document) { return root.querySelector(sel); }
 function $role(panel, role) { return panel.querySelector(`[data-role="${role}"]`); }
@@ -94,10 +130,78 @@ function fillSelect(sel, items, placeholderKey) {
     const opt = document.createElement('option');
     opt.value = d.index;
     opt.textContent = d.label;
+    // identidade estavel do device (#53): o `label` e decorado com API e marcas,
+    // entao nao serve para comparacao — guardamos os campos crus de /api/devices.
+    opt.dataset.name = d.name == null ? '' : String(d.name);
+    opt.dataset.hostapi = d.hostapi == null ? '' : String(d.hostapi);
     if (d.tags.includes('laguna')) opt.dataset.laguna = '1';
     if (d.tags.includes('vb_cable_in') || d.tags.includes('vb_cable_out')) opt.dataset.cable = '1';
     sel.appendChild(opt);
   }
+}
+
+// {index, name, hostapi} do <option> selecionado, ou null no placeholder.
+function selectedDeviceIdentity(sel) {
+  const opt = sel && sel.options ? sel.options[sel.selectedIndex] : null;
+  if (!opt || opt.value === '') return null;
+  return {index: opt.value, name: opt.dataset.name || '', hostapi: opt.dataset.hostapi || ''};
+}
+
+// Opcoes reais do select (sem o placeholder) no formato do helper de resolucao.
+function deviceOptions(sel) {
+  return Array.from(sel.options)
+    .filter(o => o.value !== '')
+    .map(o => ({value: o.value, name: o.dataset.name || '', hostapi: o.dataset.hostapi || ''}));
+}
+
+// Nome salvo (só existe no formato novo) — usado para avisar o usuario.
+function savedDeviceName(saved) {
+  return saved && typeof saved === 'object' && saved.name ? String(saved.name) : null;
+}
+
+// Funcao pura: dada a selecao salva e as opcoes atuais, devolve o indice (string)
+// a aplicar, ou null. Formato novo ({index,name,hostapi}) casa por name+hostapi e
+// devolve o indice ATUAL desse device — plugar um fone renumera o PortAudio e o
+// indice salvo passa a ser de outro dispositivo (#53). Formato antigo (so indice,
+// de versoes anteriores do app) mantem o caminho de hoje: casa por indice.
+function resolveDeviceSelection(saved, options) {
+  if (saved == null || saved === '') return null;
+  const opts = options || [];
+  if (typeof saved === 'object') {
+    const index = saved.index == null ? null : String(saved.index);
+    if (saved.name) {
+      const hostapi = saved.hostapi == null ? '' : String(saved.hostapi);
+      const hits = opts.filter(o => o.name === String(saved.name) && o.hostapi === hostapi);
+      if (!hits.length) return null;
+      // homonimos no mesmo host API: prefere o que manteve o indice salvo
+      const exact = index != null && hits.find(o => o.value === index);
+      return exact ? exact.value : hits[0].value;
+    }
+    return index != null && opts.some(o => o.value === index) ? index : null;
+  }
+  const legacy = String(saved);
+  return opts.some(o => o.value === legacy) ? legacy : null;
+}
+
+// Aviso por painel de que um device salvo sumiu. `names` vazio esconde o aviso.
+function setDeviceWarning(dir, names) {
+  state.missingDevices[dir] = Array.from(new Set(names.filter(Boolean)));
+  renderDeviceWarning(dir);
+}
+
+function renderDeviceWarning(dir) {
+  const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
+  if (!panel) return;
+  const el = $role(panel, 'device_warn');
+  if (!el) return;
+  const names = state.missingDevices[dir] || [];
+  if (!names.length) {
+    el.textContent = '';
+    el.classList.add('hidden');
+    return;
+  }
+  el.textContent = resolveEvent({key: 'warn.device_missing', args: {names: names.join(', ')}});
+  el.classList.remove('hidden');
 }
 
 function selectByPreference(sel, preferredTag) {
@@ -148,7 +252,10 @@ async function refreshDevices() {
     for (const [role, prop] of PERSIST_FIELDS[dir]) {
       if (prop !== 'value') continue;
       const el = $role(panel, role);
-      if (el && el.tagName === 'SELECT') snapshot[dir][role] = el.value;
+      if (!el || el.tagName !== 'SELECT') continue;
+      // devices vao pela identidade estavel: o clique no 🔄 re-inicializa o
+      // PortAudio e e exatamente ai que os indices renumeram (#53).
+      snapshot[dir][role] = DEVICE_ROLES.has(role) ? selectedDeviceIdentity(el) : el.value;
     }
   }
 
@@ -167,14 +274,29 @@ async function refreshDevices() {
     for (const dir of ['falar', 'escutar']) {
       const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
       if (!panel || !snapshot[dir]) continue;
+      const missing = [];
       for (const [role, val] of Object.entries(snapshot[dir])) {
         if (val === '' || val == null) continue;
         const sel = $role(panel, role);
-        if (sel && Array.from(sel.options).some(o => o.value === String(val))) {
+        if (!sel) continue;
+        if (DEVICE_ROLES.has(role)) {
+          const resolved = resolveDeviceSelection(val, deviceOptions(sel));
+          if (resolved !== null) {
+            sel.value = resolved;
+            savePanelConfig(dir);
+          } else if (savedDeviceName(val)) {
+            sel.value = '';
+            missing.push(savedDeviceName(val));
+          }
+          continue;
+        }
+        if (Array.from(sel.options).some(o => o.value === String(val))) {
           sel.value = String(val);
           savePanelConfig(dir);
         }
       }
+      // soma ao que restorePanelConfig() já apontou nesta mesma passada
+      if (missing.length) setDeviceWarning(dir, (state.missingDevices[dir] || []).concat(missing));
     }
   } finally {
     if (btn) { btn.disabled = false; btn.classList.remove('is-refreshing'); }
@@ -215,23 +337,62 @@ function refreshVolumeLabels(dir) {
   if (ptLbl && ptVol) ptLbl.textContent = `${parseFloat(ptVol.value || '0')} dB`;
 }
 
+// Abre o passo a passo do rodapé, rola até ele e devolve o foco ao <summary>
+// (o guia é a resposta para os estados amarelo/vermelho do badge — #65).
+function openSetupGuide() {
+  const guide = document.getElementById('setup-guide');
+  if (!guide) return;
+  guide.open = true;
+  // o evento 'toggle' do <details> é assíncrono: sincroniza já, no mesmo tick
+  syncSetupGuideCta();
+  guide.scrollIntoView({behavior: 'smooth', block: 'start'});
+  const summary = guide.querySelector('summary');
+  if (summary) summary.focus();
+}
+
+// aria-expanded do CTA reflete o <details> — inclusive quando o usuário o
+// abre/fecha direto no rodapé.
+function syncSetupGuideCta() {
+  const cta = document.getElementById('setup-guide-cta');
+  const guide = document.getElementById('setup-guide');
+  if (cta && guide) cta.setAttribute('aria-expanded', String(guide.open));
+}
+
+// Mesma convenção do conn-badge: o rótulo guarda a chave em data-i18n para o
+// toggle PT/EN reaplicar o estado atual. Nos estados sem dispositivo virtual
+// (amarelo/vermelho) o badge vira acionável e revela o CTA para o guia; nos
+// demais ele continua um <span> informativo, sem semântica de botão.
 function updateLagunaBadge() {
   const el = document.getElementById('laguna-badge');
   if (!el) return;
   const L = state.devices.laguna || {};
   const T = window.LAGUNA_T || ((k) => k);
+  let key, cls, actionable = false;
   if (state.devicesError) {
-    el.textContent = T('badge.devices_error');
-    el.className = 'badge err';
+    key = 'badge.devices_error';
+    cls = 'err';
   } else if (L.has_laguna_name) {
-    el.textContent = T('badge.laguna_ok');
-    el.className = 'badge ok';
+    key = 'badge.laguna_ok';
+    cls = 'ok';
   } else if (L.virtual_in != null || L.virtual_out != null) {
-    el.textContent = T('badge.laguna_cable');
-    el.className = 'badge warn';
+    key = 'badge.laguna_cable';
+    cls = 'warn';
+    actionable = true;
   } else {
-    el.textContent = T('badge.laguna_none');
-    el.className = 'badge err';
+    key = 'badge.laguna_none';
+    cls = 'err';
+    actionable = true;
+  }
+  const label = el.querySelector('[data-role="laguna-label"]');
+  if (label) {
+    label.setAttribute('data-i18n', key);
+    label.textContent = T(key);
+  }
+  el.className = `badge ${cls}${actionable ? ' is-actionable' : ''}`;
+  const cta = document.getElementById('setup-guide-cta');
+  if (cta) {
+    cta.hidden = !actionable;
+    syncSetupGuideCta();
   }
 }
 
@@ -324,23 +485,44 @@ function savePanelConfig(dir) {
   try {
     const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
     const data = {};
+    const devices = {};
     for (const [role, prop] of PERSIST_FIELDS[dir]) {
       const el = $role(panel, role);
-      if (el) data[role] = el[prop];
+      if (!el) continue;
+      data[role] = el[prop];
+      // indice continua salvo em data[role] (compat); a identidade estavel vai
+      // em paralelo, sem mudar o formato dos campos ja existentes (#53).
+      if (DEVICE_ROLES.has(role) && el.tagName === 'SELECT') {
+        const id = selectedDeviceIdentity(el);
+        if (id) devices[role] = id;
+      }
     }
+    data[LS_DEVICES_FIELD] = devices;
     localStorage.setItem(LS_KEYS.cfg(dir), JSON.stringify(data));
   } catch {}
 }
 
 function restorePanelConfig(dir) {
+  const missing = [];
   try {
     const raw = localStorage.getItem(LS_KEYS.cfg(dir));
     if (!raw) return;
     const data = JSON.parse(raw);
+    const savedDevices = data[LS_DEVICES_FIELD] || {};
     const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
     for (const [role, prop] of PERSIST_FIELDS[dir]) {
       const el = $role(panel, role);
       if (!el) continue;
+      // device: resolve pela identidade estavel (cai no indice se a config for
+      // antiga). Sem match, o select fica no placeholder e o usuario e avisado —
+      // melhor que apontar calado para OUTRO dispositivo (#53).
+      if (DEVICE_ROLES.has(role) && prop === 'value' && el.tagName === 'SELECT') {
+        const saved = savedDevices[role] != null ? savedDevices[role] : data[role];
+        const resolved = resolveDeviceSelection(saved, deviceOptions(el));
+        if (resolved !== null) el.value = resolved;
+        else if (savedDeviceName(saved)) { el.value = ''; missing.push(savedDeviceName(saved)); }
+        continue;
+      }
       if (data[role] == null) continue;
       // para <select>, só seta se a opção existe
       if (prop === 'value' && el.tagName === 'SELECT') {
@@ -352,7 +534,9 @@ function restorePanelConfig(dir) {
         el[prop] = data[role];
       }
     }
-  } catch {}
+  } catch {} finally {
+    setDeviceWarning(dir, missing);
+  }
 }
 
 async function startDirection(dir) {
@@ -361,11 +545,13 @@ async function startDirection(dir) {
   if (!cfg) return;
   setStatusKey(panel, 'loading', 'status.loading');
   toggleButtons(panel, true);
-  const res = await API.start(dir, cfg);
-  if (res.error) {
+  const {ok, data} = await API.start(dir, cfg);
+  if (!ok || data.error) {
     // 400 do backend: resolve error_key via i18n e interpola {device}/{detail}
-    // (reusa resolveEvent); sem key, cai no texto cru de res.error.
-    const text = resolveEvent({ key: res.error_key, args: res.args, msg: res.error });
+    // (reusa resolveEvent); sem key, cai no texto cru de data.error. Falha de
+    // rede/500 chega aqui como error.request_failed (postJSON) — nunca marcamos
+    // a direcao como rodando sem worker.
+    const text = resolveEvent({ key: data.error_key, args: data.args, msg: data.error });
     setStatus(panel, 'error', text);
     toggleButtons(panel, false);
     return;
@@ -375,15 +561,21 @@ async function startDirection(dir) {
 
 async function stopDirection(dir) {
   const panel = document.querySelector(`.panel[data-dir="${dir}"]`);
-  await API.stop(dir);
-  state.running.delete(dir);
-  setStatusKey(panel, 'idle', 'status.idle');
-  toggleButtons(panel, false);
-  // zera meters
-  const mi = $role(panel, 'meter-in');
-  const mo = $role(panel, 'meter-out');
-  if (mi) mi.style.width = '0%';
-  if (mo) mo.style.width = '0%';
+  try {
+    const {ok, data} = await API.stop(dir);
+    // Falhou? O painel volta pra idle do mesmo jeito (finally): travar a UI so
+    // piora — o usuario precisa poder tentar de novo.
+    if (!ok) console.error('[laguna] /api/stop falhou:', data);
+  } finally {
+    state.running.delete(dir);
+    setStatusKey(panel, 'idle', 'status.idle');
+    toggleButtons(panel, false);
+    // zera meters
+    const mi = $role(panel, 'meter-in');
+    const mo = $role(panel, 'meter-out');
+    if (mi) mi.style.width = '0%';
+    if (mo) mo.style.width = '0%';
+  }
 }
 
 function buildConfig(panel, dir) {
@@ -446,7 +638,26 @@ function buildConfig(panel, dir) {
   return cfg;
 }
 
+// Aviso de erro recuperável (#45) volta sozinho para "rodando" depois disto.
+// Deixar o aviso fixo seria o erro simétrico ao que a issue corrigiu: o painel
+// ficaria vermelho com um contador ("2/3") congelado enquanto a direção segue
+// traduzindo — e uma frase boa já zerou esse orçamento no backend.
+const RECOVERABLE_STATUS_MS = 4000;
+const recoverTimers = {};  // dir -> timer pendente de volta ao normal
+
+// Toda pintura de status cancela a volta pendente: assim o timer nunca repinta
+// "rodando" por cima de um erro fatal, de um Parar ou de um novo Iniciar que
+// tenham chegado no meio da janela.
+function clearRecoverTimer(panel) {
+  const dir = panel.dataset.dir;
+  if (recoverTimers[dir]) {
+    clearTimeout(recoverTimers[dir]);
+    delete recoverTimers[dir];
+  }
+}
+
 function setStatus(panel, cls, text) {
+  clearRecoverTimer(panel);
   const el = $role(panel, 'status');
   el.className = `status ${cls}`;
   el.textContent = text;
@@ -454,6 +665,7 @@ function setStatus(panel, cls, text) {
 }
 
 function setStatusKey(panel, cls, key) {
+  clearRecoverTimer(panel);
   const el = $role(panel, 'status');
   el.className = `status ${cls}`;
   el.setAttribute('data-i18n', key);
@@ -523,6 +735,18 @@ function onEvent(ev) {
       $role(panel, 'n').textContent = ev.samples ?? 0;
       break;
     case 'error':
+      // Erro recuperável (uma frase falhou, o worker segue traduzindo — issue
+      // #45): aviso âmbar transitório, sem derrubar os botões. Derrubá-los era o
+      // bug que motivou a issue (Parar desabilitado com o worker vivo); fixar o
+      // aviso em vermelho seria trocá-lo por outro, com o painel gritando erro
+      // sobre uma direção saudável.
+      if (ev.recoverable) {
+        setStatus(panel, 'warn', resolveEvent(ev));
+        recoverTimers[dir] = setTimeout(() => {
+          setStatusKey(panel, 'running', 'status.running');
+        }, RECOVERABLE_STATUS_MS);
+        break;
+      }
       setStatus(panel, 'error', resolveEvent(ev));
       toggleButtons(panel, false);
       state.running.delete(dir);
@@ -634,9 +858,11 @@ function initLang() {
       const next = cur === 'pt' ? 'en' : 'pt';
       window.applyI18n(next);
       try { localStorage.setItem(LS_KEYS.lang, next); } catch {}
-      // atualiza badge e placeholders de selects (dependem de T)
+      // atualiza badge, placeholders de selects e avisos de device (dependem de T)
       updateLagunaBadge();
       refreshPlaceholders();
+      renderDeviceWarning('falar');
+      renderDeviceWarning('escutar');
     });
   }
 }
@@ -667,6 +893,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindPanel('escutar');
   const refreshBtn = document.getElementById('refresh-devices');
   if (refreshBtn) refreshBtn.addEventListener('click', refreshDevices);
+  // Um listener no badge cobre o clique no texto e no CTA (bubbling); só age
+  // nos estados acionáveis, marcados por .is-actionable em updateLagunaBadge().
+  const lagunaBadge = document.getElementById('laguna-badge');
+  if (lagunaBadge) {
+    lagunaBadge.addEventListener('click', () => {
+      if (lagunaBadge.classList.contains('is-actionable')) openSetupGuide();
+    });
+  }
+  const setupGuide = document.getElementById('setup-guide');
+  if (setupGuide) setupGuide.addEventListener('toggle', syncSetupGuideCta);
   // WS primeiro e sem await: o badge de conexão precisa refletir o estado real
   // mesmo que a listagem de dispositivos falhe ou demore.
   connectWS();

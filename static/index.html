@@ -17,7 +17,7 @@
       </div>
     </div>
     <div class="badges">
-      <span id="laguna-badge" class="badge neutral" data-tip-i18n="tip.laguna_badge">🎛 <span data-i18n="badge.devices">Dispositivos</span>: —</span>
+      <span id="laguna-badge" class="badge neutral" data-tip-i18n="tip.laguna_badge"><span data-role="laguna-label">🎛 <span data-i18n="badge.devices">Dispositivos</span>: —</span><button id="setup-guide-cta" class="badge-cta" type="button" hidden aria-controls="setup-guide" aria-expanded="false" data-i18n="badge.setup_cta" data-aria-i18n="aria.setup_cta" aria-label="Abrir o passo a passo de configuração">como resolver →</button></span>
       <span id="gpu-badge" class="badge neutral" data-tip-i18n="tip.gpu_badge">⚡ —</span>
       <span id="conn-badge" class="badge neutral" data-tip-i18n="tip.conn_badge">🔌 <span data-role="conn-label" data-i18n="conn.reconnecting">reconectando…</span></span>
       <button id="refresh-devices" class="icon-btn" data-tip-i18n="tip.refresh_devices" data-aria-i18n="aria.refresh_devices" aria-label="Atualizar dispositivos">🔄</button>
@@ -41,6 +41,7 @@
       </header>
 
       <div class="form">
+        <p class="device-warn hidden" data-role="device_warn" role="status" aria-live="polite"></p>
         <label data-tip-i18n="tip.langs">
           <span data-i18n="label.langs">Idioma falado → alvo</span>
           <div class="row">
@@ -154,6 +155,7 @@
       </header>
 
       <div class="form">
+        <p class="device-warn hidden" data-role="device_warn" role="status" aria-live="polite"></p>
         <label data-tip-i18n="tip.escutar.langs">
           <span data-i18n="label.langs">Idioma falado → alvo</span>
           <div class="row">
@@ -251,7 +253,7 @@
   </main>
 
   <footer class="tips">
-    <details>
+    <details id="setup-guide">
       <summary data-i18n="tips.setup">Configurar Discord com Laguna Translator (passo a passo)</summary>
       <ol data-i18n-html="tips.steps">
         <li>Instale VB-CABLE (grátis): <code>https://vb-audio.com/Cable/</code> e reinicie.</li>

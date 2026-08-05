@@ -46,10 +46,14 @@ window.LAGUNA_I18N = {
     "error.passthrough_invalid_devices": "passthrough: dispositivos inválidos (src={src}, dst={dst})",
     "error.passthrough_query": "passthrough query_devices: {detail}",
     "error.passthrough_generic": "passthrough: {detail}",
-    "error.play": "play(dev={dev}): {detail}",
+    "error.output_retry": "Saída falhou (dev={dev}) {attempt}/{max} — a tradução continua. ({detail})",
+    "error.play": "Saída perdida (dev={dev}) — {max} frases seguidas falharam. Verifique o dispositivo. ({detail})",
+    "error.segment_failed": "Frase perdida ({attempt}/{max}) — a tradução continua. ({detail})",
+    "error.direction_lost": "Direção encerrada: {max} frases seguidas falharam. ({detail})",
     "error.start_capture_device_invalid": "Dispositivo de captura [{device}] indisponível — atualize a lista de dispositivos e selecione de novo. ({detail})",
     "error.start_output_device_invalid": "Dispositivo de saída [{device}] indisponível — atualize a lista de dispositivos e selecione de novo. ({detail})",
     "error.invalid_direction": "direction deve ser falar|escutar",
+    "error.request_failed": "Falha ao falar com o servidor local ({detail}) — verifique se o Laguna está rodando.",
     "note.worker_stopped_gain_deferred": "worker parado; ganho será aplicado no próximo start",
 
     // meters
@@ -64,6 +68,7 @@ window.LAGUNA_I18N = {
     "aria.refresh_devices": "Atualizar dispositivos",
     "aria.meter_in": "Nível de entrada",
     "aria.meter_out": "Nível de saída",
+    "aria.setup_cta": "Abrir o passo a passo de configuração",
 
     // labels
     "label.langs": "Idioma falado → alvo",
@@ -143,6 +148,8 @@ window.LAGUNA_I18N = {
     "badge.laguna_cable": "🎛 VB-CABLE detectado (renomeie para \"Laguna\")",
     "badge.laguna_none": "⚠ Sem dispositivo virtual (instale VB-CABLE)",
     "badge.devices_error": "⚠ Falha ao listar dispositivos — verifique o servidor e clique em 🔄",
+    "badge.setup_cta": "como resolver →",
+    "warn.device_missing": "⚠ Dispositivo salvo não encontrado: {names}. Selecione outro (a escolha anterior não foi aplicada).",
     "placeholder.mic": "Selecione um microfone",
     "placeholder.virtual_out": "Selecione a saída virtual",
     "placeholder.fone": "Fone/alto-falante",
@@ -193,10 +200,14 @@ window.LAGUNA_I18N = {
     "error.passthrough_invalid_devices": "passthrough: invalid devices (src={src}, dst={dst})",
     "error.passthrough_query": "passthrough query_devices: {detail}",
     "error.passthrough_generic": "passthrough: {detail}",
-    "error.play": "play(dev={dev}): {detail}",
+    "error.output_retry": "Output failed (dev={dev}) {attempt}/{max} — translation continues. ({detail})",
+    "error.play": "Output lost (dev={dev}) — {max} consecutive phrases failed. Check the device. ({detail})",
+    "error.segment_failed": "Phrase dropped ({attempt}/{max}) — translation continues. ({detail})",
+    "error.direction_lost": "Direction stopped: {max} consecutive phrases failed. ({detail})",
     "error.start_capture_device_invalid": "Capture device [{device}] unavailable — refresh the device list and pick it again. ({detail})",
     "error.start_output_device_invalid": "Output device [{device}] unavailable — refresh the device list and pick it again. ({detail})",
     "error.invalid_direction": "direction must be falar|escutar",
+    "error.request_failed": "Failed to reach the local server ({detail}) — check that Laguna is running.",
     "note.worker_stopped_gain_deferred": "worker stopped; gain will be applied on next start",
 
     // meters
@@ -211,6 +222,7 @@ window.LAGUNA_I18N = {
     "aria.refresh_devices": "Refresh devices",
     "aria.meter_in": "Input level",
     "aria.meter_out": "Output level",
+    "aria.setup_cta": "Open the setup step by step",
 
     // labels
     "label.langs": "Spoken language → target",
@@ -290,6 +302,8 @@ window.LAGUNA_I18N = {
     "badge.laguna_cable": "🎛 VB-CABLE detected (rename to \"Laguna\")",
     "badge.laguna_none": "⚠ No virtual device (install VB-CABLE)",
     "badge.devices_error": "⚠ Failed to list devices — check the server and click 🔄",
+    "badge.setup_cta": "how to fix →",
+    "warn.device_missing": "⚠ Saved device not found: {names}. Pick another one (the previous choice was not applied).",
     "placeholder.mic": "Select a microphone",
     "placeholder.virtual_out": "Select virtual output",
     "placeholder.fone": "Headphones/speaker",
