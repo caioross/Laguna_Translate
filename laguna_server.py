@@ -12,28 +12,18 @@ Por padrao abre o navegador automaticamente.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import socket
 import sys
 import threading
 import time
 import traceback
-import urllib.request
 import webbrowser
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-import sounddevice as sd
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-
-from laguna_core import DirectionConfig, DirectionWorker
-from laguna_devices import detect_laguna_devices, list_devices
-from laguna_pipeline import SAMPLE_RATE
 
 ROOT = Path(__file__).parent
 STATIC = ROOT / "static"
@@ -48,6 +38,130 @@ LOG_PATH = ROOT / "laguna.log"
 READY_TIMEOUT_S = 15.0  # espera maxima ate o servidor aceitar conexao
 READY_POLL_S = 0.1
 PROBE_TIMEOUT_S = 1.5  # probe HTTP em quem ja ocupa a porta
+PROBE_MAX_BYTES = 4096  # teto do corpo lido de quem ocupa a porta (pode ser hostil)
+NOTIFY_TIMEOUT_MS = 120_000  # prazo do MessageBox: sem ninguem para clicar, ele fecha sozinho
+
+
+# ---------------------------------------------------------------------------
+# Startup: diagnostico visivel (#58)
+#
+# O atalho do Desktop roda `pythonw laguna_server.py` com janela oculta: sem
+# console, stdout/stderr vao para o vazio. Todo caminho de erro precisa deixar
+# rastro em disco (laguna.log) e, quando nao ha console, sinal na tela
+# (MessageBox do Windows). Nada disso toca o caminho feliz.
+#
+# Estes tres helpers ficam ANTES dos imports pesados de proposito: dependencia
+# faltando (foi o #56) e o modo de falha mais comum do atalho, e ele acontece
+# no topo do modulo — antes de qualquer linha de `main()` poder registrar algo.
+# Eles usam so a stdlib, entao sempre estao disponiveis.
+# ---------------------------------------------------------------------------
+
+
+def _log(msg: str, exc: Optional[BaseException] = None) -> None:
+    """Anexa uma linha (e o traceback, se houver) em `laguna.log`.
+
+    Nunca levanta: log e diagnostico, nao pode ser o motivo de o app cair.
+    """
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    text = f"[{stamp}] {msg}\n"
+    if exc is not None:
+        text += "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    with suppress(Exception):
+        with open(LOG_PATH, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(text)
+
+
+def _is_headless(executable: str, stderr: object, console_hidden: bool = False) -> bool:
+    """True quando nao ha console que o usuario possa ler.
+
+    Tres formas do mesmo problema: sob `pythonw.exe` o Python nao anexa console
+    e `sys.stderr` e None; o nome do executavel cobre ambientes que ainda assim
+    entregam um stderr qualquer; e `console_hidden` cobre o fallback do atalho
+    (`Laguna.vbs:11-13` roda `python.exe` com window style 0 — ha console, ha
+    stderr, e ninguem ve nada).
+
+    O basename e extraido na mao (e nao via `Path`) porque o caminho e sempre
+    do Windows: num `PosixPath`, `C:\\Python313\\pythonw.exe` nao teria
+    separador e o teste desta funcao rodaria diferente na CI (Linux).
+    """
+    if stderr is None or console_hidden:
+        return True
+    name = (executable or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.startswith("pythonw")
+
+
+def _console_is_hidden() -> bool:
+    """No Windows, o console deste processo esta ausente ou oculto?
+
+    `GetConsoleWindow() == 0` = sem console; janela existente porem invisivel =
+    o caso do `wscript` rodando `python.exe` escondido. Qualquer erro aqui
+    degrada para False (o MessageBox e um extra, nunca um requisito).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if not hwnd:
+            return True
+        return not bool(ctypes.windll.user32.IsWindowVisible(hwnd))
+    except Exception:
+        return False
+
+
+def _notify_error(msg: str) -> None:
+    """Sinaliza falha de startup: stderr sempre; MessageBox se ninguem le stderr.
+
+    So no caminho de erro e so no Windows — `ctypes` e stdlib, sem dependencia
+    nova. Um MessageBox aqui e o unico jeito de o usuario do atalho saber que
+    algo falhou (hoje ele so ve "nada acontece").
+
+    A caixa e SEMPRE com prazo (`MessageBoxTimeoutW`): sem ninguem para clicar
+    — tarefa agendada, sessao 0, shell automatizado — um MessageBoxW comum
+    prende o processo para sempre e troca "morre calado" por "trava calado".
+    """
+    with suppress(Exception):
+        print(f"[laguna] {msg}", file=sys.stderr)
+    if sys.platform != "win32":
+        return
+    if not _is_headless(sys.executable, sys.stderr, _console_is_hidden()):
+        return
+    with suppress(Exception):
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        flags = 0x10 | 0x40000 | 0x1000  # MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL
+        box = getattr(user32, "MessageBoxTimeoutW", None)
+        if box is not None:
+            box(0, msg, "Laguna Translator", flags, 0, int(NOTIFY_TIMEOUT_MS))
+        else:  # pragma: no cover — API presente em todo Windows suportado
+            user32.MessageBoxW(0, msg, "Laguna Translator", flags)
+
+
+try:
+    import sounddevice as sd
+    import uvicorn
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import JSONResponse
+    from fastapi.staticfiles import StaticFiles
+
+    from laguna_core import DirectionConfig, DirectionWorker
+    from laguna_devices import detect_laguna_devices, list_devices
+    from laguna_pipeline import SAMPLE_RATE
+except BaseException as _import_exc:
+    # Sem isto, `pip install` incompleto = duplo-clique que nao faz nada.
+    # A excecao original segue subindo (quem roda no console ve o traceback
+    # de sempre); o que muda e que agora fica registrada e visivel.
+    _log("falha ao importar as dependencias do servidor", _import_exc)
+    _notify_error(
+        "O Laguna não conseguiu iniciar: falta uma dependência.\n\n"
+        f"{type(_import_exc).__name__}: {_import_exc}\n\n"
+        "Instale as dependências com:\n"
+        "C:\\Python313\\python.exe -m pip install -r requirements.txt\n\n"
+        f"Detalhes em: {LOG_PATH}"
+    )
+    raise
 
 # estado global
 _workers: dict[str, DirectionWorker] = {}
@@ -336,63 +450,6 @@ if STATIC.is_dir():
     app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
 
 
-# ---------------------------------------------------------------------------
-# Startup: diagnostico visivel (#58)
-#
-# O atalho do Desktop roda `pythonw laguna_server.py` com janela oculta: sem
-# console, stdout/stderr vao para o vazio. Todo caminho de erro daqui pra baixo
-# precisa deixar rastro em disco (laguna.log) e, quando nao ha console, sinal
-# na tela (MessageBox do Windows). Nada disso toca o caminho feliz.
-# ---------------------------------------------------------------------------
-
-
-def _log(msg: str, exc: Optional[BaseException] = None) -> None:
-    """Anexa uma linha (e o traceback, se houver) em `laguna.log`.
-
-    Nunca levanta: log e diagnostico, nao pode ser o motivo de o app cair.
-    """
-    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    text = f"[{stamp}] {msg}\n"
-    if exc is not None:
-        text += "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    with suppress(Exception):
-        with open(LOG_PATH, "a", encoding="utf-8", errors="replace") as fh:
-            fh.write(text)
-
-
-def _is_headless(executable: str, stderr: object) -> bool:
-    """True quando nao ha console para o usuario ler um erro.
-
-    Sob `pythonw.exe` o Python nao anexa console e `sys.stderr` e None; o nome
-    do executavel cobre ambientes que ainda assim entregam um stderr qualquer.
-
-    O basename e extraido na mao (e nao via `Path`) porque o caminho e sempre
-    do Windows: num `PosixPath`, `C:\\Python313\\pythonw.exe` nao teria
-    separador e o teste desta funcao rodaria diferente na CI (Linux).
-    """
-    if stderr is None:
-        return True
-    name = (executable or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name.startswith("pythonw")
-
-
-def _notify_error(msg: str) -> None:
-    """Sinaliza falha de startup: stderr sempre; MessageBox se nao ha console.
-
-    So no caminho de erro e so no Windows — `ctypes` e stdlib, sem dependencia
-    nova. Um MessageBox aqui e o unico jeito de o usuario do atalho saber que
-    algo falhou (hoje ele so ve "nada acontece").
-    """
-    with suppress(Exception):
-        print(f"[laguna] {msg}", file=sys.stderr)
-    if sys.platform != "win32" or not _is_headless(sys.executable, sys.stderr):
-        return
-    with suppress(Exception):
-        import ctypes
-
-        ctypes.windll.user32.MessageBoxW(0, msg, "Laguna Translator", 0x10)  # MB_ICONERROR
-
-
 def _port_is_free(host: str, port: int) -> bool:
     """True se ainda da para escutar em host:port (no Windows o bind e exclusivo).
 
@@ -413,19 +470,30 @@ def _is_laguna_status(payload: object) -> bool:
     return isinstance(payload, dict) and isinstance(payload.get("running"), list)
 
 
-def _probe_laguna(timeout: float = PROBE_TIMEOUT_S) -> bool:
+def _probe_laguna(host: str = HOST, port: int = PORT, timeout: float = PROBE_TIMEOUT_S) -> bool:
     """Quem ocupa a porta e outra instancia do Laguna?
 
-    Requisicao de LOOPBACK (127.0.0.1, constante do modulo) — nao e rede: nada
-    sai da maquina, a promessa 100% local segue intacta.
+    Conexao crua com `http.client` — e NAO `urllib.request` — porque o opener
+    default do urllib faz duas coisas incompativeis com a promessa 100% local:
+    herda o proxy do sistema/`http_proxy` (que nao faz bypass de loopback, entao
+    o request sairia da maquina) e segue redirect 3xx para host arbitrario. Esta
+    funcao so roda quando a porta esta ocupada por um processo DESCONHECIDO —
+    exatamente o cenario em que seguir instrucao de terceiro seria ruim. Aqui o
+    socket e 127.0.0.1 e ponto final: sem proxy, sem redirect.
     """
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
-        with urllib.request.urlopen(f"{URL}/api/status", timeout=timeout) as resp:  # noqa: S310
-            if getattr(resp, "status", 200) != 200:
-                return False
-            return _is_laguna_status(json.loads(resp.read().decode("utf-8", "replace")))
+        conn.request("GET", "/api/status")
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return False
+        # Leitura limitada: um servidor hostil que goteja bytes nao prende o startup.
+        return _is_laguna_status(json.loads(resp.read(PROBE_MAX_BYTES).decode("utf-8", "replace")))
     except Exception:
         return False
+    finally:
+        with suppress(Exception):
+            conn.close()
 
 
 def _wait_until_listening(
@@ -462,7 +530,7 @@ def _serve() -> int:
             return 0
         _log(f"porta {PORT} ocupada por um processo que nao responde como Laguna")
         _notify_error(
-            f"A porta {PORT} esta ocupada por outro programa, entao o Laguna nao pode iniciar.\n\n"
+            f"A porta {PORT} está ocupada por outro programa, então o Laguna não pode iniciar.\n\n"
             f"Feche o programa que usa a porta {PORT} e abra o Laguna de novo.\n\n"
             f"Detalhes em: {LOG_PATH}"
         )
@@ -473,16 +541,38 @@ def _serve() -> int:
     return 0
 
 
+def _exit_code(code: object) -> int:
+    """Normaliza o `code` de um SystemExit para um codigo de saida inteiro."""
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    return 1  # SystemExit("mensagem") = erro, com a mensagem impressa pelo Python
+
+
 def main() -> int:
     _log(f"iniciando laguna_server em {URL} (python {sys.version.split()[0]})")
     try:
         return _serve()
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         raise
+    except SystemExit as exc:
+        # O uvicorn sai por `sys.exit(1)` quando o bind falha ou o startup ASGI
+        # quebra — o caminho mais provavel de "o servidor nao subiu". Sem este
+        # ramo, esses dois casos voltam a morrer calados sob pythonw.
+        code = _exit_code(exc.code)
+        if code == 0:
+            raise
+        _log(f"servidor encerrou com codigo {code} sem subir", exc)
+        _notify_error(
+            f"O Laguna não conseguiu iniciar (o servidor encerrou com o código {code}).\n\n"
+            f"Detalhes em: {LOG_PATH}"
+        )
+        return code
     except BaseException as exc:  # noqa: BLE001 — ultimo anteparo: sem isto o erro some
         _log("falha fatal no startup", exc)
         _notify_error(
-            f"O Laguna nao conseguiu iniciar.\n\n{type(exc).__name__}: {exc}\n\n"
+            f"O Laguna não conseguiu iniciar.\n\n{type(exc).__name__}: {exc}\n\n"
             f"Traceback completo em: {LOG_PATH}"
         )
         return 1
