@@ -77,6 +77,17 @@ OUT_SINK_JOIN_S = 2.0         # espera maxima pela thread do sink ao fechar
 OUT_SINK_WAIT_MARGIN_S = 2.0  # folga sobre a duracao da frase ao esperar o sink
 OUT_SINK_POLL_S = 0.2         # granularidade do stop na thread do sink
 
+# Robustez da saida (issue #54): o sink ja se recupera sozinho de uma falha — o
+# stream cai, a frase seguinte reabre — mas o relato para fora era terminal, e a
+# UI marcava a direcao inteira como parada (com o Stop desabilitado) por causa de
+# um soluco de driver, com o worker ainda traduzindo. Mesma doutrina do orcamento
+# de retries da captura (CAPTURE_MAX_RETRIES) e das frases (SEGMENT_MAX_FAILURES):
+# falha isolada e recuperavel, so falhas CONSECUTIVAS no MESMO device sao fatais.
+# 3 (e nao os 5 da captura) porque aqui cada falha ja custou uma frase muda naquele
+# device — o usuario precisa saber cedo. Numero de robustez, nao de latencia: o
+# caminho feliz nunca toca este contador.
+OUT_SINK_MAX_ERRORS = 3       # falhas consecutivas por device antes do fatal
+
 
 def _open_output_stream(device: int, samplerate: int):
     """Abre e inicia o OutputStream mono de um device de saida.
@@ -104,19 +115,24 @@ class _OutputSink:
     uma vez so, ficando bloqueado ~1 frase, nao N.
 
     Falha de device e local: a excecao fecha so este stream (a proxima frase
-    reabre) e vai para `on_error(device, exc)`; os outros sinks seguem tocando.
+    reabre) e vai para `on_error(device, exc, consecutivas)`; os outros sinks
+    seguem tocando. O contador de falhas CONSECUTIVAS vive aqui (issue #54) —
+    e este objeto que sabe se o `write()` deu certo, e um contador por sink ja
+    e um contador por device: a falha de um nunca contamina o do outro. Quem
+    decide se `consecutivas` ja e fatal e o worker (`_on_sink_error`).
     """
 
     def __init__(
         self,
         device: int,
         samplerate: int,
-        on_error: Callable[[int, Exception], None],
+        on_error: Callable[[int, Exception, int], None],
         open_stream: Optional[Callable[[int, int], object]] = None,
     ) -> None:
         self.device = int(device)
         self.samplerate = int(samplerate)
         self._on_error = on_error
+        self._erros = 0  # falhas consecutivas; so a thread do sink toca
         self._open_stream = open_stream or _open_output_stream
         self._q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1)
         self._done = threading.Event()
@@ -184,6 +200,11 @@ class _OutputSink:
             except Exception as e:
                 self._close_stream()  # forca reabertura na proxima frase
                 self._report(e)
+            else:
+                # Frase tocada: o device esta vivo de novo. Zera o orcamento para
+                # que falhas ESPACADAS ao longo de uma call (um soluco por hora)
+                # nunca somem ate o teto e matem a direcao (issue #54).
+                self._erros = 0
             finally:
                 self._done.set()
 
@@ -195,10 +216,15 @@ class _OutputSink:
         Stop (ou troca de config, que faz `laguna_server` parar o worker antigo)
         com uma frase tocando acendia `error.play` na UI — e `static/app.js`
         trata erro como terminal, deixando o painel travado. Parar nao e erro.
+
+        O contador so anda em falha REPORTADA: o write abortado pelo Stop nao
+        conta, senao o shutdown envenenaria o orcamento de um sink que sequer
+        vai sobreviver a ele.
         """
         if self._stop.is_set():
             return
-        self._on_error(self.device, exc)
+        self._erros += 1
+        self._on_error(self.device, exc, self._erros)
 
     def _ensure_stream(self):
         with self._lock:
@@ -314,6 +340,10 @@ class DirectionWorker:
         self._last_xrun_log = float("-inf")  # throttle de log de xrun
         self._drops = DropCounter()  # descartes de fila sob sobrecarga
         self._sinks: list[_OutputSink] = []  # saidas da traducao (abertas em _run)
+        # Devices de saida ja declarados PERDIDOS (terminal `error.play` emitido).
+        # So a thread de cada sink escreve, e cada uma escreve a propria chave —
+        # `set.add`/`in` de builtin bastam, sem lock no caminho de erro.
+        self._sinks_perdidos: set[int] = set()
         # volume control (linear factors; atualizados via setters threadsafe)
         self._out_gain = 10.0 ** (float(cfg.output_gain_db) / 20.0)
         self._pt_gain = 10.0 ** (float(cfg.passthrough_gain_db) / 20.0)
@@ -921,6 +951,7 @@ class DirectionWorker:
             # Stop chegou durante o warmup (carga de modelo estoura o join de 2s
             # do stop()): nao adianta abrir device para fechar no finally.
             return
+        self._sinks_perdidos.clear()  # sinks novos, orcamento e veredito zerados
         self._sinks = [
             _OutputSink(dev, samplerate, self._on_sink_error)
             for dev in self.cfg.output_devices
@@ -931,12 +962,57 @@ class DirectionWorker:
         for sink in sinks:
             sink.close()
 
-    def _on_sink_error(self, dev: int, exc: Exception) -> None:
+    def _on_sink_error(self, dev: int, exc: Exception, consecutivas: int) -> None:
+        """Decide se a falha de UM device de saida e soluco ou perda definitiva.
+
+        Antes, toda falha virava `error.play` — e `static/app.js` trata erro
+        nao-recuperavel como fim de sessao (status 'error', `running.delete`,
+        `toggleButtons(false)`). Resultado: um fone entrando em power save
+        desabilitava o Stop com o worker ainda capturando e mandando audio pro
+        Discord, e a unica saida era recarregar a pagina (issue #54).
+
+        O degrau e o mesmo do laco de traducao (issue #45): falha isolada e
+        `recoverable=True` — aviso ambar transitorio, a direcao segue rodando e o
+        Stop segue habilitado — e so `OUT_SINK_MAX_ERRORS` falhas CONSECUTIVAS no
+        mesmo device viram o terminal `error.play`. Preferimos `recoverable` a um
+        `kind:"status"` novo porque status pinta o painel de VERDE ("rodando")
+        com um texto de falha e nao volta sozinho; o caminho recuperavel ja existe
+        na UI, entao nenhuma linha de `app.js` precisa mudar para isto funcionar.
+
+        O veredito terminal e SEM VOLTA para aquele device (`_sinks_perdidos`).
+        Sem essa trava, o zerar-em-sucesso abriria um estado que nao existia antes
+        desta issue: depois do `error.play` a UI ja derrubou os botoes
+        (`app.js`: `toggleButtons(false)` + `running.delete`), e uma frase boa
+        seguida de nova falha voltaria como `recoverable` — o painel repintaria
+        VERDE "Rodando" com o Parar desabilitado. Um device que ja custou
+        `OUT_SINK_MAX_ERRORS` frases seguidas nao volta a ser soluco; tambem evita
+        re-emitir o terminal a cada frase.
+        """
+        if dev in self._sinks_perdidos:
+            return
+        if consecutivas >= OUT_SINK_MAX_ERRORS:
+            self._sinks_perdidos.add(dev)
+            self._emit_key(
+                "error",
+                "error.play",
+                {"dev": dev, "max": OUT_SINK_MAX_ERRORS, "detail": str(exc)},
+                msg=(
+                    f"Saida perdida (dev={dev}): {OUT_SINK_MAX_ERRORS} frases "
+                    f"seguidas falharam. ({exc})"
+                ),
+            )
+            return
         self._emit_key(
             "error",
-            "error.play",
-            {"dev": dev, "detail": str(exc)},
-            msg=f"play(dev={dev}): {exc}",
+            "error.output_retry",
+            {
+                "dev": dev,
+                "attempt": consecutivas,
+                "max": OUT_SINK_MAX_ERRORS,
+                "detail": str(exc),
+            },
+            msg=f"Saida falhou (dev={dev}) {consecutivas}/{OUT_SINK_MAX_ERRORS}: {exc}",
+            recoverable=True,
         )
 
     def _play(self, pcm: np.ndarray, sr: int) -> None:
