@@ -365,10 +365,15 @@ def _is_headless(executable: str, stderr: object) -> bool:
 
     Sob `pythonw.exe` o Python nao anexa console e `sys.stderr` e None; o nome
     do executavel cobre ambientes que ainda assim entregam um stderr qualquer.
+
+    O basename e extraido na mao (e nao via `Path`) porque o caminho e sempre
+    do Windows: num `PosixPath`, `C:\\Python313\\pythonw.exe` nao teria
+    separador e o teste desta funcao rodaria diferente na CI (Linux).
     """
     if stderr is None:
         return True
-    return Path(executable or "").name.lower().startswith("pythonw")
+    name = (executable or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.startswith("pythonw")
 
 
 def _notify_error(msg: str) -> None:
