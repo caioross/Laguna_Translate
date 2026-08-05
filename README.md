@@ -487,6 +487,16 @@ Cada painel tem:
 ## 🧯 Solução de problemas
 
 <details>
+<summary><b>Duplo-clique no atalho e "não acontece nada"</b></summary>
+
+O atalho roda `pythonw` (sem console), então o erro não aparece na tela sozinho — mas ele **fica gravado**. Abra o `laguna.log` na pasta do projeto: as últimas linhas trazem a data/hora do start e o traceback completo da falha. A partir de agora, falha fatal também mostra uma caixa de mensagem do Windows com o motivo — inclusive quando falta uma dependência (a caixa mostra o `pip install -r requirements.txt` a rodar).
+
+Se a porta **7531** já estiver ocupada:
+- por outra instância do Laguna → o atalho só abre o navegador na instância que já está rodando (não sobe um segundo servidor);
+- por outro programa → o Laguna avisa, registra no `laguna.log` e **não** abre o navegador. Feche o programa que usa a porta e tente de novo.
+</details>
+
+<details>
 <summary><b>CUDA não é detectada / cai pra CPU mesmo com GPU NVIDIA</b></summary>
 
 Instale os pacotes CUDA via pip e confirme que estão no mesmo Python:
@@ -918,6 +928,16 @@ Each panel has language selection, device selection (mic/loopback, virtual outpu
 
 <a id="en-troubleshooting"></a>
 ## 🧯 Troubleshooting
+
+<details>
+<summary><b>Double-clicking the shortcut does nothing</b></summary>
+
+The shortcut runs `pythonw` (no console), so errors can't surface on their own — but they are **written down**. Open `laguna.log` in the project folder: it holds the start timestamp and the full traceback. A fatal failure now also pops a Windows message box with the reason — including a missing dependency, where the box tells you to run `pip install -r requirements.txt`.
+
+If port **7531** is already taken:
+- by another Laguna instance → the shortcut just opens the browser on the running one (no second server);
+- by a different program → Laguna warns, logs it and does **not** open the browser. Close the program using the port and try again.
+</details>
 
 <details>
 <summary><b>CUDA not detected / falls back to CPU even with an NVIDIA GPU</b></summary>
