@@ -12,9 +12,11 @@ original de `fase0_poc.py`. Não reordene os imports do topo.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
-from collections import deque
+import unicodedata
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -126,6 +128,169 @@ class VADSegmenter:
         return None
 
 
+# --- Filtro de alucinacao do STT (issue #47) --------------------------------
+#
+# Segmento sem fala de verdade (respiracao, clique de teclado, musica ao fundo)
+# nao volta vazio do faster-whisper: volta uma frase plausivel. Como o Laguna
+# FALA o resultado no cabo virtual, a alucinacao vira o app conversando sozinho
+# numa call de Discord — o pior modo de falha do produto.
+#
+# Duas camadas, ambas locais e sem custo relevante (so texto, ja fora do STT):
+# metadados que o proprio Whisper calcula, e uma blocklist normalizada para as
+# frases-lixo classicas, que as vezes vem com logprob bom.
+#
+# REGRA DE OURO: barrar fala real e MUITO pior que deixar passar um ruido. Todo
+# limiar aqui e conservador e, na duvida, o filtro APROVA.
+
+NO_SPEECH_PROB_MAX = 0.6  # acima disso o proprio Whisper acha que nao ha fala
+AVG_LOGPROB_MIN = -1.0  # abaixo disso o texto e chute de baixa confianca
+REPEAT_MIN_WORDS = 4  # repeticao so e suspeita a partir daqui ("sim" passa)
+# 1 palavra ocupando >=80% do segmento. Em 0.75, "vai vai vai time" (grito de
+# torcida, 3/4) era barrado — fala real. Em 0.8 o menor caso barrado com 4
+# palavras e o 4/4 puro ("sim sim sim sim"), que e o alvo da issue.
+REPEAT_DOMINANT_RATIO = 0.8
+REPEAT_LOOP_MIN_WORDS = 6  # "sim nao sim nao sim nao": poucas palavras, muitas vezes
+REPEAT_LOOP_DISTINCT_RATIO = 1 / 3
+
+# Frases-lixo classicas do Whisper em silencio/musica, ja normalizadas
+# (minusculas, sem acento e sem pontuacao). Lista curta de proposito: cada
+# entrada precisa ser algo que ninguem diz numa call. "obrigado" sozinho, por
+# exemplo, NAO entra — e fala legitima comum.
+HALLUCINATION_BLOCKLIST = frozenset(
+    {
+        # PT — creditos de legenda e encerramento de video
+        "legendas pela comunidade amara org",
+        "legendado pela comunidade amara org",
+        "legendas pela comunidade",
+        "obrigado por assistir",
+        "obrigada por assistir",
+        "obrigado por assistirem",
+        "ate o proximo video",
+        "inscreva se no canal",
+        "tchau",
+        # EN — idem
+        "subtitles by the amara org community",
+        "subtitles by amara org community",
+        "thanks for watching",
+        "thank you for watching",
+        "thank you",
+        "thanks",
+        "bye",
+        "you",  # saida tipica do Whisper em silencio puro
+    }
+)
+
+_PONTUACAO = re.compile(r"[^\w\s]")
+_ESPACOS = re.compile(r"\s+")
+
+
+def normalize_for_filter(text: str) -> str:
+    """Minusculas, sem acento, sem pontuacao, espacos colapsados.
+
+    Serve para comparar com a blocklist e para contar repeticao: "Obrigado por
+    assistir!" e "obrigado por assistir" tem que cair na mesma chave.
+    """
+    sem_acento = "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+    return _ESPACOS.sub(" ", _PONTUACAO.sub(" ", sem_acento.lower())).strip()
+
+
+def _is_repetition(words: list[str]) -> bool:
+    """Repeticao patologica: o modelo travou numa palavra ou num par delas."""
+    if len(words) < REPEAT_MIN_WORDS:
+        return False
+    dominante = Counter(words).most_common(1)[0][1]
+    if dominante / len(words) >= REPEAT_DOMINANT_RATIO:
+        return True
+    # Loop curto alternado ("sim nao sim nao sim nao"): muitas palavras, quase
+    # nenhuma distinta. Exige segmento mais longo para nao pegar fala real.
+    return (
+        len(words) >= REPEAT_LOOP_MIN_WORDS
+        and len(set(words)) <= len(words) * REPEAT_LOOP_DISTINCT_RATIO
+    )
+
+
+def is_hallucination(
+    text: str,
+    no_speech_prob: float | None = None,
+    avg_logprob: float | None = None,
+) -> bool:
+    """Decide se a transcricao deve ser descartada antes de virar voz.
+
+    Pura: so texto e numeros, sem audio, modelo ou GPU — testavel na CI.
+
+    Os metadados so reprovam em CONJUNCAO (`no_speech_prob` alto E `avg_logprob`
+    baixo): sozinho, qualquer um dos dois derruba fala real (frase curta legitima
+    tem logprob ruim com frequencia). Metadado ausente (`None`) nao opina.
+    """
+    norm = normalize_for_filter(text)
+    if not norm:  # "...", "!!!", so pontuacao: nao ha o que falar
+        return True
+    if norm in HALLUCINATION_BLOCKLIST:
+        return True
+    if _is_repetition(norm.split()):
+        return True
+    if (
+        no_speech_prob is not None
+        and avg_logprob is not None
+        and no_speech_prob > NO_SPEECH_PROB_MAX
+        and avg_logprob < AVG_LOGPROB_MIN
+    ):
+        return True
+    return False
+
+
+@dataclass(frozen=True)
+class STTResult:
+    """Saida do STT com os metadados que o faster-whisper ja calcula.
+
+    `no_speech_prob` e `avg_logprob` sao a media ponderada por duracao dos
+    segmentos (ver `_aggregate_segments`); ficam `None` quando o modelo nao os
+    expoe. Existe para que `laguna_core` possa julgar a confianca da frase sem
+    quebrar quem so quer o texto (`transcribe`/`transcribe_with_lang`).
+    """
+
+    text: str
+    language: str
+    no_speech_prob: float | None = None
+    avg_logprob: float | None = None
+
+
+def _aggregate_segments(segments) -> tuple[str, float | None, float | None]:
+    """Junta os segmentos num texto e agrega os metadados por duracao.
+
+    Ponderar por duracao (e nao por contagem) evita que um "hm" de 0.2s pese o
+    mesmo que uma frase de 3s. Segmento sem duracao util (ou sem o atributo,
+    caso de dubles em teste) entra com peso 1.0.
+    """
+    partes: list[str] = []
+    soma_ns = soma_lp = soma_peso = 0.0
+    tem_ns = tem_lp = False
+    for s in segments:
+        partes.append(s.text.strip())
+        peso = float(getattr(s, "end", 0.0) or 0.0) - float(getattr(s, "start", 0.0) or 0.0)
+        if peso <= 0:
+            peso = 1.0
+        ns = getattr(s, "no_speech_prob", None)
+        lp = getattr(s, "avg_logprob", None)
+        if ns is not None:
+            soma_ns += float(ns) * peso
+            tem_ns = True
+        if lp is not None:
+            soma_lp += float(lp) * peso
+            tem_lp = True
+        soma_peso += peso
+    texto = " ".join(partes).strip()
+    if soma_peso <= 0:
+        return texto, None, None
+    return (
+        texto,
+        soma_ns / soma_peso if tem_ns else None,
+        soma_lp / soma_peso if tem_lp else None,
+    )
+
+
 class STT:
     def __init__(self, language: str, model_size: str, device: str, compute_type: str) -> None:
         log(f"Carregando faster-whisper {model_size} ({device}/{compute_type})...")
@@ -139,28 +304,32 @@ class STT:
         )
         self.language = language
 
-    def transcribe(self, pcm: np.ndarray) -> str:
-        segments, _ = self.model.transcribe(
-            pcm,
-            language=self.language,
-            beam_size=1,
-            vad_filter=False,
-            condition_on_previous_text=False,
-            no_speech_threshold=0.6,
-        )
-        return " ".join(s.text.strip() for s in segments).strip()
+    def transcribe_detailed(self, pcm: np.ndarray, detect_lang: bool = False) -> STTResult:
+        """Transcreve devolvendo texto + metadados de confianca (issue #47).
 
-    def transcribe_with_lang(self, pcm: np.ndarray) -> tuple[str, str]:
+        `detect_lang=True` deixa o Whisper decidir o idioma (o que
+        `transcribe_with_lang` fazia); caso contrario usa o idioma fixo da
+        direcao. E o unico ponto que fala com o modelo — os dois metodos
+        historicos delegam aqui para nao existirem dois jeitos de transcrever.
+        """
         segments, info = self.model.transcribe(
             pcm,
-            language=None,
+            language=None if detect_lang else self.language,
             beam_size=1,
             vad_filter=False,
             condition_on_previous_text=False,
             no_speech_threshold=0.6,
         )
-        text = " ".join(s.text.strip() for s in segments).strip()
-        return text, info.language
+        text, no_speech_prob, avg_logprob = _aggregate_segments(segments)
+        lang = info.language if detect_lang else self.language
+        return STTResult(text=text, language=lang, no_speech_prob=no_speech_prob, avg_logprob=avg_logprob)
+
+    def transcribe(self, pcm: np.ndarray) -> str:
+        return self.transcribe_detailed(pcm).text
+
+    def transcribe_with_lang(self, pcm: np.ndarray) -> tuple[str, str]:
+        res = self.transcribe_detailed(pcm, detect_lang=True)
+        return res.text, res.language
 
 
 ARGOS_CODE_MAP = {"pt": "pb", "pt-br": "pb", "pt-BR": "pb"}

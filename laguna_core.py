@@ -26,6 +26,7 @@ from laguna_pipeline import (
     VADSegmenter,
     WebRTCVADGate,
     detect_device,
+    is_hallucination,
     log,
 )
 
@@ -514,16 +515,29 @@ class DirectionWorker:
         polui a metrica (a metrica nao pode mentir por omissao, cf. issue #21).
         """
         t0 = time.perf_counter()
-        if self.cfg.skip_same_lang:
-            text, detected = stt.transcribe_with_lang(seg)
-        else:
-            text = stt.transcribe(seg)
-            detected = self.cfg.src_lang
+        res = stt.transcribe_detailed(seg, detect_lang=self.cfg.skip_same_lang)
+        text, detected = res.text, res.language
         t_stt = (time.perf_counter() - t0) * 1000
         if not text.strip():
             return
 
         self._emit("stt", text=text, lang=detected, ms=round(t_stt))
+
+        # Alucinacao do STT (issue #47): ruido que virou frase plausivel nao pode
+        # chegar ao MT/TTS — sairia como voz do app no cabo virtual, falando com
+        # a call inteira enquanto o usuario esta calado. O texto barrado ja foi
+        # emitido acima e a UI marca o descarte, entao o painel nunca fica mudo
+        # sem explicacao. A latencia de STT ainda conta: o trabalho existiu.
+        if is_hallucination(text, res.no_speech_prob, res.avg_logprob):
+            self._emit_key(
+                "skipped",
+                "mt.hallucination",
+                msg="Ruido descartado (provavel alucinacao do STT); sem traducao",
+                reason="hallucination",
+            )
+            self._lat_stt.append(t_stt)
+            self._push_latency()
+            return
 
         if self.cfg.skip_same_lang and detected == self.cfg.tgt_lang:
             self._emit("skipped", reason=f"detected={detected} == tgt; sem traducao")

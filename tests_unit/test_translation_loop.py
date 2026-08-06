@@ -13,6 +13,7 @@ import queue
 import numpy as np
 
 from laguna_core import SEGMENT_MAX_FAILURES, DirectionConfig, DirectionWorker
+from laguna_pipeline import STTResult
 
 SEG = np.zeros(160, dtype=np.float32)  # segmento fake; nenhum duble olha o audio
 
@@ -20,20 +21,24 @@ SEG = np.zeros(160, dtype=np.float32)  # segmento fake; nenhum duble olha o audi
 class FakeSTT:
     """STT falso: levanta nas chamadas cujo indice (1-based) esta em `falhas`."""
 
-    def __init__(self, falhas=(), texto="ola mundo", lang="pt") -> None:
+    def __init__(self, falhas=(), texto="ola mundo", lang="pt", no_speech=0.05, logprob=-0.2) -> None:
         self.falhas = set(falhas)
         self.texto = texto
         self.lang = lang
+        self.no_speech = no_speech
+        self.logprob = logprob
         self.chamadas = 0
 
-    def transcribe_with_lang(self, seg):
+    def transcribe_detailed(self, seg, detect_lang=False):
         self.chamadas += 1
         if self.chamadas in self.falhas:
             raise RuntimeError(f"stt explodiu na chamada {self.chamadas}")
-        return self.texto, self.lang
-
-    def transcribe(self, seg):
-        return self.transcribe_with_lang(seg)[0]
+        return STTResult(
+            text=self.texto,
+            language=self.lang,
+            no_speech_prob=self.no_speech,
+            avg_logprob=self.logprob,
+        )
 
 
 class FakeMT:
@@ -173,7 +178,7 @@ def test_parar_no_meio_de_uma_frase_nao_vira_erro():
     class _FalhaNoStop:
         chamadas = 0
 
-        def transcribe_with_lang(self, seg):
+        def transcribe_detailed(self, seg, detect_lang=False):
             self.chamadas += 1
             w._stop.set()  # como se o usuario tivesse apertado Parar agora
             raise RuntimeError("stream aborted")
