@@ -682,7 +682,10 @@ function onEvent(ev) {
       break;
     case 'skipped': {
       const el = $role(panel, 'mt');
-      el.textContent = window.LAGUNA_T ? window.LAGUNA_T('mt.skipped') : '(same language)';
+      // `key` chegou com o filtro de alucinação (#47); eventos antigos (mesmo
+      // idioma) não mandam chave e continuam caindo em 'mt.skipped'.
+      const key = ev.key || 'mt.skipped';
+      el.textContent = window.LAGUNA_T ? window.LAGUNA_T(key) : (ev.msg || '(same language)');
       el.classList.add('skipped');
       setTimeout(() => el.classList.remove('skipped'), 1500);
       break;
